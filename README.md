@@ -8,7 +8,7 @@ A simple Python repository to study voice anonymization with children.
 Requires a Python >= 3.10 environment
 
 ```
-pip install -r requirements.txt`
+pip install -r requirements.txt
 ```
 
 ## Docs
