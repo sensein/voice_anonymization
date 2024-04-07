@@ -37,7 +37,7 @@ def stereo_to_mono(waveform: torch.Tensor) -> torch.Tensor:
         torch.Tensor: The converted mono audio waveform.
 
     References:
-        - https://github.com/pytorch/audio/issues/363#issuecomment-637131351
+        https://github.com/pytorch/audio/issues/363#issuecomment-637131351
     """
     if waveform.shape[0] == 2:  # Check if the audio is stereo
         waveform = torch.mean(waveform, dim=0, keepdim=True)
@@ -53,21 +53,22 @@ def normalize_loudness(waveform: torch.Tensor, sample_rate: int) -> tuple[torch.
 
     Returns:
         torch.Tensor: The loudness-normalized audio waveform.
-        bool: True if the waveform was successfully normalized, False if it wasn't (should be skipped).
-    References:
-        - https://github.com/csteinmetz1/pyloudnorm?tab=readme-ov-file#loudness-normalize-and-peak-normalize-audio-files
-    """
+        bool: True if the waveform was successfully normalized, False if it wasn't.
 
+    References:
+        https://github.com/csteinmetz1/pyloudnorm?tab=readme-ov-file#loudness-normalize-and-peak-normalize-audio-files
+    """
+    # [1, 24220]
     # Ensure waveform is in [samples, channels] format for pyloudnorm
     if waveform.ndim == 2 and waveform.shape[0] == 1:  # Mono audio in [1, samples]
         waveform_np = waveform.squeeze(0).numpy()  # Convert to [samples,]
-    elif waveform.ndim == 2:
-        waveform_np = waveform.transpose(0, 1).numpy()  # Convert to [samples, channels]
+    # elif waveform.ndim == 2: # todo check 
+    #     waveform_np = waveform.transpose(0, 1).numpy()  # Convert to [samples, channels]
     else:
         raise ValueError("Unsupported waveform shape for loudness normalization.")
     
     meter = pyln.Meter(sample_rate)
-    try:
+    try: # [x, 1]
         loudness = meter.integrated_loudness(waveform_np)
         loudness_normalized_audio = pyln.normalize.loudness(waveform_np, loudness, -23.0)  # Target loudness -23 LUFS
         normalized_waveform = torch.tensor(loudness_normalized_audio, dtype=waveform.dtype)
@@ -87,20 +88,20 @@ def load_audio_dataset(dataset_path: str, transcript_path_pattern: str = "{base_
     The function dynamically finds transcripts based on a provided pattern, accommodating various audio file extensions.
 
     Args:
-    - dataset_path (str): Path to the directory containing audio files.
-    - transcript_path_pattern (str): Format string to locate transcript files, where "{base_name}" 
-      will be replaced by the audio file's base name without extension.
-    - file_extensions (list[str], optional): List of audio file extensions to include in the dataset.
+        dataset_path (str): Path to the directory containing audio files.
+        transcript_path_pattern (str): Format string to locate transcript files, where "{base_name}" 
+    will be replaced by the audio file's base name without extension.
+        file_extensions (list[str], optional): List of audio file extensions to include in the dataset.
 
     Returns:
-    - datasets.Dataset: A dataset object containing audio files and their transcripts.
+        datasets.Dataset: A dataset object containing audio files and their transcripts. # todo add speaker ID
 
     Example:
     --------
     To load a dataset where audio files named 'audio123.wav' have transcripts named 'audio123.txt':
     >>> dataset = load_audio_dataset("/path/to/audio_files", "{base_name}.txt")
     """
-    print('loading audio dataset...')
+    print(f'loading audio dataset at {dataset_path}...')
     audio_files = []
     transcripts = []
 
@@ -127,11 +128,11 @@ def load_audio_dataset(dataset_path: str, transcript_path_pattern: str = "{base_
 
 def upload_to_huggingface(audio_dataset: Dataset, hf_dataset_name: str) -> None:
     """
-    Uploads the processed dataset to Hugging Face Hub.
+    Uploads the processed dataset to Hugging Face Hub. Assumes already logged in to Hugging Face.
 
     Args:
-    - audio_dataset (Dataset): A dataset object containing audio files and their transcripts.
-    - hf_dataset_name (str): The desired Hugging Face dataset repository name.
+        audio_dataset (Dataset): A dataset object containing audio files and their transcripts.
+        hf_dataset_name (str): The desired Hugging Face dataset repository name.
     """
     print('attempting to upload to huggingface...')
     token = HfFolder.get_token()
@@ -141,6 +142,7 @@ def upload_to_huggingface(audio_dataset: Dataset, hf_dataset_name: str) -> None:
         print(f"Hugging Face token found. Uploading dataset...")
     # api = HfApi()
     # api.create_repo(repo_id=hf_dataset_name, token=token, repo_type="dataset", exist_ok=True)
+    # todo add unique string specifying version of dataset (i.e. commit id) "revision=date.date()" or "=after x changes"
     audio_dataset.push_to_hub(hf_dataset_name) # TODO: This hangs on "Creating parquet from Arrow format" for some reason
     print(f'Dataset uploaded to Hugging Face as {hf_dataset_name}.')
 
@@ -201,7 +203,7 @@ def main():
                 torchaudio.save(processed_audio_path, waveform, sr)
 
     # Upload to Hugging Face
-    audio_dataset = load_audio_dataset(processed_data_path, transcript_path_pattern)
+    audio_dataset = load_audio_dataset(processed_data_path, transcript_path_pattern) # todo load original dataset too.
     upload_to_huggingface(audio_dataset, hf_dataset_name)
 
 if __name__ == "__main__":

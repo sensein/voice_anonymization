@@ -162,3 +162,5 @@ cython_debug/
 settings.json
 data/
 tmp/
+models/
+pretrained_models/

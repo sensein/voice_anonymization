@@ -1,6 +1,6 @@
 import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
-from datasets import load_dataset, load_from_disk
+from datasets import load_dataset, load_from_disk, Dataset, DatasetDict
 from tqdm.auto import tqdm
 
 def setup_device_and_dtype():
@@ -135,7 +135,9 @@ def main():
     updated_dataset = transcribe_dataset(dataset, pipe)
     
     # Save updated dataset
-    updated_dataset.save_to_disk(path_to_updated_dataset)
+    if isinstance(updated_dataset, (Dataset, DatasetDict)): # solve static type checking issue
+        updated_dataset.save_to_disk(path_to_updated_dataset)
+
     print("Dataset updated and saved with transcriptions.")
     
     # updated_dataset = load_from_disk(path_to_updated_dataset)
