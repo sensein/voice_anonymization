@@ -1,0 +1,1 @@
+CODEBASE_DIR = '/om2/user/azain/code/voice_anonymization' # TODO. find a better way to handle this

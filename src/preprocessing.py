@@ -8,6 +8,7 @@ from huggingface_hub import HfFolder, HfApi
 from tqdm import tqdm
 import shutil
 from pathlib import Path
+import re
 
 def resample_audio(audio_path: str, target_sample_rate: int=16000) -> tuple[torch.Tensor, int]:
     """
@@ -62,8 +63,8 @@ def normalize_loudness(waveform: torch.Tensor, sample_rate: int) -> tuple[torch.
     # Ensure waveform is in [samples, channels] format for pyloudnorm
     if waveform.ndim == 2 and waveform.shape[0] == 1:  # Mono audio in [1, samples]
         waveform_np = waveform.squeeze(0).numpy()  # Convert to [samples,]
-    # elif waveform.ndim == 2: # todo check 
-    #     waveform_np = waveform.transpose(0, 1).numpy()  # Convert to [samples, channels]
+    elif waveform.ndim == 2: # Stereo audio in [2, samples]
+        waveform_np = waveform.transpose(0, 1).numpy()  # Convert to [samples, channels]
     else:
         raise ValueError("Unsupported waveform shape for loudness normalization.")
     
@@ -82,48 +83,58 @@ def load_transcript(transcript_path):
     with open(transcript_path, 'r', encoding='utf-8') as file:
         return file.read().strip()
     
-def load_audio_dataset(dataset_path: str, transcript_path_pattern: str = "{base_name}.txt", file_extensions: list[str] = ['.wav']) -> Dataset:
+def create_audio_dataset(dataset_path: str, transcript_path_pattern: str = "{base_name}.txt", 
+                         speaker_id_pattern: str = r"(\d+)_", file_extensions: list[str] = ['.wav']) -> Dataset:
     """
     Loads audio files from a specified directory into a Hugging Face `datasets` dataset, including transcripts. 
-    The function dynamically finds transcripts based on a provided pattern, accommodating various audio file extensions.
+    The function dynamically finds transcripts and extracts speaker IDs based on a provided pattern, accommodating various audio file extensions.
 
     Args:
         dataset_path (str): Path to the directory containing audio files.
-        transcript_path_pattern (str): Format string to locate transcript files, where "{base_name}" 
+        transcript_path_pattern (str, optional): Format string to locate transcript files, where "{base_name}" 
     will be replaced by the audio file's base name without extension.
+        speaker_id_pattern (str, optional): Regex pattern to extract the speaker ID from the file name.
         file_extensions (list[str], optional): List of audio file extensions to include in the dataset.
 
     Returns:
-        datasets.Dataset: A dataset object containing audio files and their transcripts. # todo add speaker ID
+        datasets.Dataset: A dataset object containing audio files and their transcripts and speaker ids.
 
     Example:
     --------
-    To load a dataset where audio files named 'audio123.wav' have transcripts named 'audio123.txt':
-    >>> dataset = load_audio_dataset("/path/to/audio_files", "{base_name}.txt")
+    To load a dataset where audio files named 'audio123.wav' have transcripts named 'audio123_transcript.txt':
+    >>> dataset = create_audio_dataset("/path/to/files", "{base_name}_transcript.txt")
     """
-    print(f'loading audio dataset at {dataset_path}...')
+    print(f'loading files from {dataset_path}...')
     audio_files = []
     transcripts = []
-
+    speaker_ids = []
     for root, dirs, files in os.walk(dataset_path):
         for file in files:
-            if any(file.endswith(ext) for ext in file_extensions):
+            if any(file.endswith(ext) for ext in file_extensions): # Todo create generator with condition (i.e. gen(files, lambda file: file.endswith(ext))
                 audio_path = os.path.join(root, file)
                 base_name = os.path.splitext(file)[0]  # Removes extension from file name
+
                 # Construct transcript path using the pattern, replacing {base_name} placeholder
-                transcript_path = os.path.join(root, transcript_path_pattern.format(base_name=base_name))
-                
+                transcript_path = os.path.join(root, transcript_path_pattern.format(base_name=base_name)) # todo could try regex+glob for transcript (may be inefficient)
                 if os.path.exists(transcript_path):
                     transcript = load_transcript(transcript_path)
                 else:
                     print(f"Transcript not found for {audio_path}. Skipping audio file.")
                     continue
                 
+                speaker_id_match = re.match(speaker_id_pattern, base_name)
+                if speaker_id_match:
+                    speaker_id = speaker_id_match.group(1)
+                else:
+                    print(f"Speaker ID not found in file name {file}. Skipping audio file.")
+                    continue
+
                 audio_files.append(audio_path)
                 transcripts.append(transcript)
+                speaker_ids.append(speaker_id)
 
-    audio_dataset = Dataset.from_dict({"audio": audio_files, "transcript": transcripts}).cast_column("audio", Audio())
-    print('done loading audio dataset')
+    audio_dataset = Dataset.from_dict({"audio": audio_files, "transcript": transcripts, "speaker_id": speaker_ids}).cast_column("audio", Audio())
+    print('done creating audio dataset')
     return audio_dataset
 
 def upload_to_huggingface(audio_dataset: Dataset, hf_dataset_name: str) -> None:
@@ -170,6 +181,7 @@ def main():
     codebase_dir = '/om2/user/azain/code/voice_anonymization'
     raw_data_path = f'{codebase_dir}/data/raw/LibriTTS/dev-clean'
     transcript_path_pattern = "{base_name}.original.txt"
+    speaker_id_pattern = r"(\d+)_" # get all digits before first underscore in filename
     target_sample_rate = 16000
     hf_dataset_name = "azain/LibriTTS"
     processed_data_path = f"{codebase_dir}/tmp/LibriTTS-processed"
@@ -182,7 +194,7 @@ def main():
     directories = [x[0] for x in os.walk(raw_data_path)]
     for root in tqdm(directories, desc="Directories"): # did this way to show progress
         _, _, audio_files = next(os.walk(root))
-        for audio_file in audio_files:
+        for audio_file in audio_files: # todo turn all these loops into generator function that yields audio files in a directory
             if any(audio_file.endswith(ext) for ext in file_extensions):
                 processed_audio_path = os.path.join(processed_data_path, audio_file)
                 if os.path.exists(processed_audio_path): continue
@@ -195,15 +207,20 @@ def main():
                     dest_transcript_path = os.path.join(processed_data_path, transcript_name)
                     shutil.copy(transcript_path, dest_transcript_path)
                 waveform, sr = resample_audio(audio_path, target_sample_rate)
+                # print('waveform shape after resample', waveform.shape)
                 waveform = stereo_to_mono(waveform)
+                # print('waveform shape after stereo to mono', waveform.shape)
                 waveform, normalized = normalize_loudness(waveform, target_sample_rate)
-                if not normalized: continue
+                # print('waveform shape after normalize loudness', waveform.shape)
+                if not normalized: 
+                    print('didnt normalize loudness for', audio_file)
+                    continue
                 if waveform.ndim == 1: waveform = waveform.unsqueeze(0)
-
+                # print(waveform) # todo add tests to ensure all waveforms successfully created (i.e. non-empty)
                 torchaudio.save(processed_audio_path, waveform, sr)
 
     # Upload to Hugging Face
-    audio_dataset = load_audio_dataset(processed_data_path, transcript_path_pattern) # todo load original dataset too.
+    audio_dataset = create_audio_dataset(processed_data_path, transcript_path_pattern, speaker_id_pattern)
     upload_to_huggingface(audio_dataset, hf_dataset_name)
 
 if __name__ == "__main__":
