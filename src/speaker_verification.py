@@ -49,13 +49,6 @@ def compute_similarity_score(embedding1, embedding2): # todo could try ECAPA too
     """
     Computes the similarity score between two embeddings using cosine similarity.
 
-    Args:
-        embedding1 (tensor): The first embedding.
-        embedding2 (tensor): The second embedding.
-
-    Returns:
-        float: The similarity score between the two embeddings.
-
     References:
         https://github.com/sensein/fab/blob/main/tutorials/voice_anonymization/voice_anonymization.ipynb
     """
@@ -67,41 +60,44 @@ def compute_pairwise_similarity(dataset: Dataset) -> Dataset:
     Computes cosine similarity across all pairs of embeddings in the dataset.
 
     Args:
-        dataset (Dataset): The dataset containing 'embeddings' for each entry.
+        dataset (Dataset): Dataset including columns ['speaker_id', 'embeddings'].
 
     Returns:
-        Dataset: A new Dataset object with columns ['speaker_id1', 'speaker_id2', 'similarity_score'].
+        Dataset: A new Dataset object with columns ['speaker_id1', 'speaker_id2', 'embedding1', 'embedding2', 'similarity_score'].
     """
+    print(f'computing pairwise similarity for {dataset}')
     num_rows = len(dataset)
-    pair_ids1 = []
-    pair_ids2 = []
+    speaker_ids1 = []
+    speaker_ids2 = []
     similarity_scores = []
+    embeddings1_list = []
+    embeddings2_list = []
 
-    # Iterate over all unique pairs
     for i in tqdm(range(num_rows)):
         for j in range(i+1, num_rows):
+            speaker_id1 = dataset[i]['speaker_id']
+            speaker_id2 = dataset[j]['speaker_id']
             embedding1 = torch.tensor(dataset[i]['embeddings'])
             embedding2 = torch.tensor(dataset[j]['embeddings'])
 
-            # Compute similarity score
             similarity_score = compute_similarity_score(embedding1, embedding2)
-
-            # Store results
-            pair_ids1.append(i)
-            pair_ids2.append(j)
+            speaker_ids1.append(speaker_id1)
+            speaker_ids2.append(speaker_id2)
             similarity_scores.append(similarity_score)
+            embeddings1_list.append(embedding1.tolist())
+            embeddings2_list.append(embedding2.tolist())
 
-    # Create a new dataset from the results
     pairs_dataset = Dataset.from_dict({
-        'speaker_id1': pair_ids1,
-        'speaker_id2': pair_ids2,
+        'speaker_id1': speaker_ids1,
+        'speaker_id2': speaker_ids2,
+        'embedding1': embeddings1_list,
+        'embedding2': embeddings2_list,
         'similarity_score': similarity_scores
     })
-
+    print('done computing pairwise similarity')
     return pairs_dataset
 
 def main():
-    # Example of loading a dataset (this should be replaced with actual dataset loading)
     # hf_dataset_name = "azain/LibriTTS-processed"
     # audio_dataset = load_dataset(hf_dataset_name)
     
@@ -110,12 +106,20 @@ def main():
     transcript_path_pattern = "{base_name}.original.txt"
     from preprocessing import create_audio_dataset
     audio_dataset = create_audio_dataset(processed_data_path, transcript_path_pattern)
+    audio_dataset = audio_dataset.shuffle(seed=42) # shuffle to get random samples
     audio_dataset = audio_dataset.select(range(100)) # small dataset for testing
     print(f"{audio_dataset=}")
     ###
+
+    ###############################################################################
+    # TODO: Set the params here before running the script
+    embeddings_dataset_path = f"{CODEBASE_DIR}/tmp/LibriTTS-processed-with-embeddings-small-shuffled"
+    similarities_dataset_path = f"{CODEBASE_DIR}/tmp/LibriTTS-processed-with-embeddings-small-shuffled-similarities"
+    ###############################################################################
     embeddings_dataset = process_data_to_embeddings(audio_dataset)
-    embeddings_dataset.save_to_disk(f"{CODEBASE_DIR}/tmp/LibriTTS-processed-with-embeddings-small")
+    embeddings_dataset.save_to_disk(embeddings_dataset_path)
     similarities = compute_pairwise_similarity(embeddings_dataset)
-    similarities.save_to_disk(f"{CODEBASE_DIR}/tmp/LibriTTS-processed-with-embeddings-small-similarities")
+    similarities.save_to_disk(similarities_dataset_path)
+
 if __name__ == "__main__":
     main()
