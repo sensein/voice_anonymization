@@ -135,8 +135,7 @@ def main():
     updated_dataset = transcribe_dataset(dataset, pipe)
     
     # Save updated dataset
-    if isinstance(updated_dataset, (Dataset, DatasetDict)): # solve static type checking issue
-        updated_dataset.save_to_disk(path_to_updated_dataset)
+    updated_dataset.save_to_disk(path_to_updated_dataset)
 
     print("Dataset updated and saved with transcriptions.")
     

@@ -1,9 +1,10 @@
 from src.utils import CODEBASE_DIR
 from datasets import Dataset, load_dataset
 import torch
-import torchaudio
 from speechbrain.inference.speaker import EncoderClassifier
+from speechbrain.utils.metric_stats import EER
 from tqdm import tqdm
+from torchmetrics.text import WordErrorRate
 
 def process_data_to_embeddings(audio_dataset: Dataset) -> Dataset:
     """
@@ -13,7 +14,7 @@ def process_data_to_embeddings(audio_dataset: Dataset) -> Dataset:
         audio_dataset (Dataset): The dataset containing audio files and their corresponding metadata.
 
     Returns:
-        Dataset: A new Dataset object containing the original audio, transcript (if applicable), and computed embeddings. # todo once speaker id added in preprocessing, handle it here
+        Dataset: A new Dataset object containing the original audio, computed embeddings and existing metadata.
     
     References:
         https://github.com/sensein/fab/blob/main/tutorials/voice_anonymization/voice_anonymization.ipynb
@@ -55,7 +56,7 @@ def compute_similarity_score(embedding1, embedding2): # todo could try ECAPA too
     cos = torch.nn.CosineSimilarity(dim=-1)
     return cos(embedding1, embedding2).item()
 
-def compute_pairwise_similarity(dataset: Dataset) -> Dataset:
+def compute_pairwise_similarity(dataset: Dataset) -> Dataset: # todo compare between concated waveforms 
     """
     Computes cosine similarity across all pairs of embeddings in the dataset.
 
@@ -73,6 +74,11 @@ def compute_pairwise_similarity(dataset: Dataset) -> Dataset:
     embeddings1_list = []
     embeddings2_list = []
 
+    # For EER and WER
+    same_speakers = []
+    predictions = []
+    references = []
+
     for i in tqdm(range(num_rows)):
         for j in range(i+1, num_rows):
             speaker_id1 = dataset[i]['speaker_id']
@@ -86,6 +92,16 @@ def compute_pairwise_similarity(dataset: Dataset) -> Dataset:
             similarity_scores.append(similarity_score)
             embeddings1_list.append(embedding1.tolist())
             embeddings2_list.append(embedding2.tolist())
+            
+            same_speakers.append(int(speaker_id1 == speaker_id2))
+
+            # Collect transcripts for WER calculation
+            predictions.append(dataset[j]['transcript'])
+            references.append(dataset[i]['transcript'])
+
+    eer_scores = EER(torch.tensor(similarity_scores), torch.tensor(same_speakers))
+    wer = WordErrorRate()
+    wer_scores = wer(predictions, references)
 
     pairs_dataset = Dataset.from_dict({
         'speaker_id1': speaker_ids1,
@@ -96,6 +112,58 @@ def compute_pairwise_similarity(dataset: Dataset) -> Dataset:
     })
     print('done computing pairwise similarity')
     return pairs_dataset
+
+def calculate_eer(dataset: Dataset) -> float:
+    """
+    Computes EER based on the similarity scores and labels in the dataset.
+    
+    Args:
+        dataset (Dataset): Dataset including columns ['speaker_id1', 'speaker_id2', 'embedding1', 'embedding2', 'similarity_score'].
+    
+    Returns:
+        float: The calculated EER and its threshold.
+    """
+    positive_scores = []
+    negative_scores = []
+    
+    for item in tqdm(dataset):
+        speaker_id1 = item['speaker_id1']
+        speaker_id2 = item['speaker_id2']
+        embedding1 = torch.tensor(item['embedding1'])
+        embedding2 = torch.tensor(item['embedding2'])
+        similarity_score = compute_similarity_score(embedding1, embedding2)
+        
+        if speaker_id1 == speaker_id2:
+            positive_scores.append(similarity_score)
+        else:
+            negative_scores.append(similarity_score)
+
+    eer, threshold = EER(torch.tensor(positive_scores), torch.tensor(negative_scores))
+    return eer, threshold
+
+
+def calculate_wer(dataset: Dataset, predictions: dict[str, str]) -> float:
+    """
+    Computes Word Error Rate (WER) based on the predictions and transcripts in the dataset.
+    
+    Args:
+        dataset (Dataset): Dataset including columns ['audio', 'speaker_id', 'transcript', 'embeddings'].
+        predictions (Dict[str, str]): Dictionary mapping audio paths to predicted transcripts.
+
+    Returns:
+        float: The calculated WER.
+    """
+    assert len(dataset) == len(predictions), "Number of predictions should match the number of samples in the dataset"
+    
+    # Sort dataset and predictions based on audio path
+    sorted_dataset = sorted(dataset, key=lambda x: x['audio']['path'])
+    sorted_predictions = [predictions[item['audio']['path']] for item in sorted_dataset]
+    
+    references = [item['transcript'] for item in sorted_dataset]
+    
+    wer = WordErrorRate()
+    wer_score = wer(sorted_predictions, references)
+    return wer_score
 
 def main():
     # hf_dataset_name = "azain/LibriTTS-processed"
