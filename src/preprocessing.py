@@ -5,10 +5,12 @@ import librosa
 from datasets import Dataset, Audio
 import os
 from huggingface_hub import HfFolder, HfApi
-from tqdm import tqdm
+import tqdm
 import shutil
 from pathlib import Path
 import re
+from datetime import datetime
+from utils import yield_filtered_files
 
 def resample_audio(audio_path: str, target_sample_rate: int=16000) -> tuple[torch.Tensor, int]:
     """
@@ -108,54 +110,60 @@ def create_audio_dataset(dataset_path: str, transcript_path_pattern: str = "{bas
     audio_files = []
     transcripts = []
     speaker_ids = []
-    for root, dirs, files in os.walk(dataset_path):
-        for file in files:
-            if any(file.endswith(ext) for ext in file_extensions): # Todo create generator with condition (i.e. gen(files, lambda file: file.endswith(ext))
-                audio_path = os.path.join(root, file)
-                base_name = os.path.splitext(file)[0]  # Removes extension from file name
+    for root, file_name in yield_filtered_files(dataset_path, lambda name: any(name.endswith(ext) for ext in file_extensions)):
+        # print(root, file_name)
+        audio_path = os.path.join(root, file_name)
+        base_name = os.path.splitext(file_name)[0]  # Removes extension from file name
 
-                # Construct transcript path using the pattern, replacing {base_name} placeholder
-                transcript_path = os.path.join(root, transcript_path_pattern.format(base_name=base_name)) # todo could try regex+glob for transcript (may be inefficient)
-                if os.path.exists(transcript_path):
-                    transcript = load_transcript(transcript_path)
-                else:
-                    print(f"Transcript not found for {audio_path}. Skipping audio file.")
-                    continue
-                
-                speaker_id_match = re.match(speaker_id_pattern, base_name)
-                if speaker_id_match:
-                    speaker_id = speaker_id_match.group(1)
-                else:
-                    print(f"Speaker ID not found in file name {file}. Skipping audio file.")
-                    continue
+        # Construct transcript path using the pattern, replacing {base_name} placeholder
+        transcript_path = os.path.join(root, transcript_path_pattern.format(base_name=base_name)) # todo could try regex+glob for transcript (may be inefficient)
+        if os.path.exists(transcript_path):
+            transcript = load_transcript(transcript_path)
+        else:
+            print(f"Transcript not found for {audio_path}. Skipping audio file.")
+            continue
+        
+        speaker_id_match = re.match(speaker_id_pattern, base_name)
+        if speaker_id_match:
+            speaker_id = speaker_id_match.group(1)
+        else:
+            print(f"Speaker ID not found in file name {file_name}. Skipping audio file.")
+            continue
 
-                audio_files.append(audio_path)
-                transcripts.append(transcript)
-                speaker_ids.append(speaker_id)
+        audio_files.append(audio_path)
+        transcripts.append(transcript)
+        speaker_ids.append(speaker_id)
 
     audio_dataset = Dataset.from_dict({"audio": audio_files, "transcript": transcripts, "speaker_id": speaker_ids}).cast_column("audio", Audio())
     print('done creating audio dataset')
     return audio_dataset
 
-def upload_to_huggingface(audio_dataset: Dataset, hf_dataset_name: str) -> None:
+def upload_to_huggingface(audio_dataset: Dataset, dataset_name: str, split: str | None = None) -> None:
     """
     Uploads the processed dataset to Hugging Face Hub. Assumes already logged in to Hugging Face.
 
     Args:
         audio_dataset (Dataset): A dataset object containing audio files and their transcripts.
-        hf_dataset_name (str): The desired Hugging Face dataset repository name.
+        dataset_name (str): The desired Hugging Face dataset repository name.
+        split (str, optional): The dataset split (e.g. "train", "dev", "test").
     """
-    print('attempting to upload to huggingface...')
+    date = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    print(f'Attempting to upload to Hugging Face: {dataset_name}, version: {date}...')      
     token = HfFolder.get_token()
     if token is None:
         raise ValueError("Hugging Face token not found. Make sure you're logged in using `huggingface-cli login`.")
     else:
         print(f"Hugging Face token found. Uploading dataset...")
-    # api = HfApi()
-    # api.create_repo(repo_id=hf_dataset_name, token=token, repo_type="dataset", exist_ok=True)
+
     # todo add unique string specifying version of dataset (i.e. commit id) "revision=date.date()" or "=after x changes"
-    audio_dataset.push_to_hub(hf_dataset_name) # TODO: This hangs on "Creating parquet from Arrow format" for some reason
-    print(f'Dataset uploaded to Hugging Face as {hf_dataset_name}.')
+    audio_dataset.push_to_hub(
+        repo_id=dataset_name, 
+        token=token, 
+        split=split,
+        commit_message=f"Add {split} split at date {date}",
+        private=False,
+        ) # TODO: This hangs on "Creating parquet from Arrow format" for some reason
+    print(f'Dataset uploaded to Hugging Face as {dataset_name}.')
 
 
 # def copy_transcripts_flat(raw_dir, processed_dir, transcript_suffix=".original.txt"):
@@ -180,10 +188,12 @@ def main():
     # TODO: Set the params here before running the script
     codebase_dir = '/om2/user/azain/code/voice_anonymization'
     raw_data_path = f'{codebase_dir}/data/raw/LibriTTS/dev-clean'
-    transcript_path_pattern = "{base_name}.original.txt"
+    transcript_path_pattern = "{base_name}.original.txt" # wont work if no relation with audio file name
     speaker_id_pattern = r"(\d+)_" # get all digits before first underscore in filename
     target_sample_rate = 16000
-    hf_dataset_name = "azain/LibriTTS"
+    num_samples = 100
+    dataset_name = f"azain/LibriTTS-dev-clean-16khz-mono-loudnorm-{num_samples}-random-samples"
+    split = 'dev'
     processed_data_path = f"{codebase_dir}/tmp/LibriTTS-processed"
     file_extensions = ['.wav']
     ###############################################################################
@@ -191,37 +201,35 @@ def main():
     os.makedirs(processed_data_path, exist_ok=True)
 
     # Process Logic
-    directories = [x[0] for x in os.walk(raw_data_path)]
-    for root in tqdm(directories, desc="Directories"): # did this way to show progress
-        _, _, audio_files = next(os.walk(root))
-        for audio_file in audio_files: # todo turn all these loops into generator function that yields audio files in a directory
-            if any(audio_file.endswith(ext) for ext in file_extensions):
-                processed_audio_path = os.path.join(processed_data_path, audio_file)
-                if os.path.exists(processed_audio_path): continue
+    for root, file_name in yield_filtered_files(raw_data_path, lambda file_name: any(file_name.endswith(ext) for ext in file_extensions)):
+        # skip already processed file
+        processed_audio_path = os.path.join(processed_data_path, file_name)
+        if os.path.exists(processed_audio_path): continue 
 
-                audio_path = os.path.join(root, audio_file)
-                base_name = os.path.splitext(audio_file)[0]
-                transcript_name = transcript_path_pattern.format(base_name=base_name)
-                transcript_path = os.path.join(root, transcript_name)
-                if os.path.exists(transcript_path):
-                    dest_transcript_path = os.path.join(processed_data_path, transcript_name)
-                    shutil.copy(transcript_path, dest_transcript_path)
-                waveform, sr = resample_audio(audio_path, target_sample_rate)
-                # print('waveform shape after resample', waveform.shape)
-                waveform = stereo_to_mono(waveform)
-                # print('waveform shape after stereo to mono', waveform.shape)
-                waveform, normalized = normalize_loudness(waveform, target_sample_rate)
-                # print('waveform shape after normalize loudness', waveform.shape)
-                if not normalized: 
-                    print('didnt normalize loudness for', audio_file)
-                    continue
-                if waveform.ndim == 1: waveform = waveform.unsqueeze(0)
-                # print(waveform) # todo add tests to ensure all waveforms successfully created (i.e. non-empty)
-                torchaudio.save(processed_audio_path, waveform, sr)
+        # copy transcript file to processed path if it exists
+        audio_path = os.path.join(root, file_name)
+        base_name, ext = os.path.splitext(file_name)
+        transcript_name = transcript_path_pattern.format(base_name=base_name)
+        transcript_path = os.path.join(root, transcript_name)
+        if os.path.exists(transcript_path):
+            dest_transcript_path = os.path.join(processed_data_path, transcript_name)
+            shutil.copy(transcript_path, dest_transcript_path)
+
+        # process audio file
+        waveform, sr = resample_audio(audio_path, target_sample_rate)
+        waveform = stereo_to_mono(waveform)
+        waveform, normalized = normalize_loudness(waveform, target_sample_rate)
+        if not normalized: 
+            print('didnt normalize loudness for', file_name)
+            continue
+        if waveform.ndim == 1: waveform = waveform.unsqueeze(0)
+        assert len(waveform) != 0, f"Empty waveform for {file_name}"
+        torchaudio.save(processed_audio_path, waveform, sr)
 
     # Upload to Hugging Face
-    audio_dataset = create_audio_dataset(processed_data_path, transcript_path_pattern, speaker_id_pattern)
-    upload_to_huggingface(audio_dataset, hf_dataset_name)
+    audio_dataset = create_audio_dataset(processed_data_path, transcript_path_pattern, speaker_id_pattern, file_extensions)
+    audio_dataset = audio_dataset.shuffle(seed=42).select(range(num_samples))
+    upload_to_huggingface(audio_dataset, dataset_name, split)
 
 if __name__ == "__main__":
     main()
