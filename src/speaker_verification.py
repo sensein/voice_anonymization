@@ -166,17 +166,17 @@ def calculate_wer(dataset: Dataset, predictions: dict[str, str]) -> float:
     return wer_score
 
 def main():
-    # hf_dataset_name = "azain/LibriTTS-processed"
-    # audio_dataset = load_dataset(hf_dataset_name)
+    dataset_name = f"azain/LibriTTS-dev-clean-16khz-mono-loudnorm-100-random-samples"
+    audio_dataset = load_dataset(dataset_name)
     
     ### # TODO temporarily do this since I cant push datasets to HuggingFace
-    processed_data_path = f"{CODEBASE_DIR}/tmp/LibriTTS-processed"
-    transcript_path_pattern = "{base_name}.original.txt"
-    from preprocessing import create_audio_dataset
-    audio_dataset = create_audio_dataset(processed_data_path, transcript_path_pattern)
-    audio_dataset = audio_dataset.shuffle(seed=42) # shuffle to get random samples
-    audio_dataset = audio_dataset.select(range(100)) # small dataset for testing
-    print(f"{audio_dataset=}")
+    # processed_data_path = f"{CODEBASE_DIR}/tmp/LibriTTS-processed"
+    # transcript_path_pattern = "{base_name}.original.txt"
+    # from preprocessing import create_audio_dataset
+    # audio_dataset = create_audio_dataset(processed_data_path, transcript_path_pattern)
+    # audio_dataset = audio_dataset.shuffle(seed=42) # shuffle to get random samples
+    # audio_dataset = audio_dataset.select(range(100)) # small dataset for testing
+    # print(f"{audio_dataset=}")
     ###
 
     ###############################################################################

@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 import re
 from datetime import datetime
-from utils import yield_filtered_files
+from utils import yield_filtered_files, CODEBASE_DIR
 
 def resample_audio(audio_path: str, target_sample_rate: int=16000) -> tuple[torch.Tensor, int]:
     """
@@ -66,7 +66,7 @@ def normalize_loudness(waveform: torch.Tensor, sample_rate: int) -> tuple[torch.
     if waveform.ndim == 2 and waveform.shape[0] == 1:  # Mono audio in [1, samples]
         waveform_np = waveform.squeeze(0).numpy()  # Convert to [samples,]
     elif waveform.ndim == 2: # Stereo audio in [2, samples]
-        waveform_np = waveform.transpose(0, 1).numpy()  # Convert to [samples, channels]
+        waveform_np = waveform.transpose(0, 1).numpy()  # Convert to [samples, 2]
     else:
         raise ValueError("Unsupported waveform shape for loudness normalization.")
     
@@ -116,7 +116,7 @@ def create_audio_dataset(dataset_path: str, transcript_path_pattern: str = "{bas
         base_name = os.path.splitext(file_name)[0]  # Removes extension from file name
 
         # Construct transcript path using the pattern, replacing {base_name} placeholder
-        transcript_path = os.path.join(root, transcript_path_pattern.format(base_name=base_name)) # todo could try regex+glob for transcript (may be inefficient)
+        transcript_path = os.path.join(root, transcript_path_pattern.format(base_name=base_name))
         if os.path.exists(transcript_path):
             transcript = load_transcript(transcript_path)
         else:
@@ -155,7 +155,6 @@ def upload_to_huggingface(audio_dataset: Dataset, dataset_name: str, split: str 
     else:
         print(f"Hugging Face token found. Uploading dataset...")
 
-    # todo add unique string specifying version of dataset (i.e. commit id) "revision=date.date()" or "=after x changes"
     audio_dataset.push_to_hub(
         repo_id=dataset_name, 
         token=token, 
@@ -184,20 +183,19 @@ def upload_to_huggingface(audio_dataset: Dataset, dataset_name: str, split: str 
 
 
 def main():
+    date = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     ###############################################################################
     # TODO: Set the params here before running the script
-    codebase_dir = '/om2/user/azain/code/voice_anonymization'
-    raw_data_path = f'{codebase_dir}/data/raw/LibriTTS/dev-clean'
+    raw_data_path = f'{CODEBASE_DIR}/data/raw/LibriTTS/dev-clean'
+    processed_data_path = f'{CODEBASE_DIR}/data/processed/LibriTTS-dev-clean-16khz-mono-loudnorm'
     transcript_path_pattern = "{base_name}.original.txt" # wont work if no relation with audio file name
     speaker_id_pattern = r"(\d+)_" # get all digits before first underscore in filename
     target_sample_rate = 16000
     num_samples = 100
-    dataset_name = f"azain/LibriTTS-dev-clean-16khz-mono-loudnorm-{num_samples}-random-samples"
+    dataset_name = f"LibriTTS-dev-clean-16khz-mono-loudnorm-{num_samples}-random-samples-{date}"
     split = 'dev'
-    processed_data_path = f"{codebase_dir}/tmp/LibriTTS-processed"
     file_extensions = ['.wav']
     ###############################################################################
-    
     os.makedirs(processed_data_path, exist_ok=True)
 
     # Process Logic
@@ -228,7 +226,9 @@ def main():
 
     # Upload to Hugging Face
     audio_dataset = create_audio_dataset(processed_data_path, transcript_path_pattern, speaker_id_pattern, file_extensions)
-    audio_dataset = audio_dataset.shuffle(seed=42).select(range(num_samples))
+    audio_dataset = audio_dataset.shuffle(seed=42).select(range(num_samples)) # TODO - TEMPORARY FOR TESTING.
+    print(audio_dataset.column_names)
+    print(audio_dataset[0])
     upload_to_huggingface(audio_dataset, dataset_name, split)
 
 if __name__ == "__main__":
