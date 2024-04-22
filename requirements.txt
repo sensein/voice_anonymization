@@ -1,0 +1,12 @@
+opensmile
+torch
+transformers
+datasets
+tqdm
+accelerate
+librosa
+soundfile
+torchaudio
+pyloudnorm
+speechbrain
+torchmetrics
