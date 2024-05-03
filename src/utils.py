@@ -5,14 +5,14 @@ CODEBASE_DIR = '/om2/user/azain/code/voice_anonymization' # TODO. find a better 
 
 def yield_filtered_files(directory_path, file_filter_func):
     """
-    Traverses a directory tree to yield the root directory and names of audio files that meet a specified filter condition.
+    Traverses a directory tree to yield the root directory and names of files that meet a specified filter condition.
 
     Args:
-        directory_path (str): Root directory from which to search for audio files.
+        directory_path (str): Root directory from which to search for files.
         file_filter_func (callable): Function to determine if a filename meets the criteria for yielding.
 
     Yields:
-        tuple: Each yielded tuple contains the root directory and the name of an audio file that passed the filter.
+        tuple: Each yielded tuple contains the root directory and the name of an file that passed the filter.
 
     Progress is tracked and displayed using a tqdm progress bar.
     """

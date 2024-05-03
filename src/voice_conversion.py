@@ -4,10 +4,10 @@ import torch
 import soundfile as sf
 from tqdm import tqdm
 from src.freevc import VoiceAnonymizer
-
+import numpy as np
 anonymizer = VoiceAnonymizer()
 
-def anonymize_audio(item, target_item):
+def anonymize_audio(item, target_item) -> dict:
     """
     Processes audio data from the dataset using source and target waveforms to generate an anonymized waveform that mimics the acoustic properties of the target.
 
@@ -18,14 +18,13 @@ def anonymize_audio(item, target_item):
     Returns:
         dict: The source item enhanced with keys 'converted_audio_waveform' for the anonymized audio.
     """
-    # Assuming anonymizer is an instance of a class that supports anonymization using a target waveform
+
     waveform = anonymizer.anonymize(
         item['audio']['array'], 
         target_item['audio']['array'],
     )
-
-    # item['converted_audio_waveform'] = waveform # TODO do i modify rest of pipeline to support this new column
     item['audio']['array'] = waveform
+    # item['converted_audio_waveform'] = waveform
 
     return item
 
@@ -40,8 +39,10 @@ def voice_convert(audio_dataset: Dataset, target_index: int) -> Dataset:
     Returns:
         Dataset: A new Dataset object containing the original metadata but with audio arrays replaced by anonymized versions.
     """
+    print(f"Converting audio dataset using target index {target_index}")
     target_item = audio_dataset[target_index] # todo can get a random one too
     updated_dataset = audio_dataset.map(anonymize_audio, fn_kwargs={'target_item': target_item})
+    print("Audio dataset converted.")
     return updated_dataset
 
 def main():

@@ -6,7 +6,8 @@ from speechbrain.utils.metric_stats import EER
 from tqdm import tqdm
 from torchmetrics.text import WordErrorRate
 import huggingface_hub
-from datasets import Dataset, Audio
+from datasets import Dataset, Audio, load_from_disk
+import json
 
 def add_embeddings(item: dict) -> dict:
     """
@@ -16,12 +17,19 @@ def add_embeddings(item: dict) -> dict:
         item (dict): Contains the 'audio' key with subkey 'array'.
 
     Returns:
-        dict: The item with a new 'embeddings' key holding the computed embeddings as a numpy array.
+        dict: The item with new 'embeddings' and 'anonymized_embeddings' keys holding the computed embeddings as numpy arrays.
     """
     classifier = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb", savedir="./models/spkrec-ecapa-voxceleb")
     waveform = torch.tensor(item['audio']['array']).squeeze()
-    embeddings = classifier.encode_batch(waveform.unsqueeze(0)).squeeze()  # Process embedding
+    embeddings = classifier.encode_batch(waveform.unsqueeze(0)).squeeze()
     item['embeddings'] = embeddings.numpy()
+
+    # Add anonymized embeddings if 'converted_audio_waveform' exists (i.e. ran voice conversion first)
+    if 'converted_audio_waveform' in item:
+        anon_waveform = torch.tensor(item['converted_audio_waveform']).squeeze()
+        anon_embeddings = classifier.encode_batch(anon_waveform.unsqueeze(0)).squeeze()
+        item['anonymized_embeddings'] = anon_embeddings.numpy()
+
     return item
 
 def process_data_to_embeddings(audio_dataset: Dataset) -> Dataset:
@@ -47,132 +55,127 @@ def compute_similarity_score(embedding1: torch.Tensor, embedding2: torch.Tensor)
     cos = torch.nn.CosineSimilarity(dim=-1)
     return cos(embedding1, embedding2).item()
 
-def compute_metrics_and_similarity(dataset: Dataset) -> tuple[Dataset, float, float]:
+def compute_metrics(dataset: Dataset) -> dict:
     """
     Computes pairwise embeddings similarity and evaluates EER and WER for the dataset.
 
     Args:
-        dataset (Dataset): Dataset including columns ['speaker_id', 'embeddings', 'transcript', 'asr_transcription'].
+        dataset (Dataset): Dataset including columns ['speaker_id', 'embeddings', 
+        'anonymized_embeddings', 'transcript', 'asr_transcription', 'asr_transcription_anon'].
 
     Returns:
-        tuple: A tuple containing:
-            - Dataset with columns ['speaker_id1', 'speaker_id2', 'embedding1', 'embedding2', 'similarity_score'].
-            - EER (Equal Error Rate) score for the dataset.
-            - WER (Word Error Rate) score computed from ASR transcriptions.
+        dict: A dictionary containing:
+            'similarities': Dataset with columns ['same_speaker', 'orig_orig_similarity_score', 'orig_anon_similarity_score', 'anon_anon_similarity_score']
+            'orig_wer_score': WER (Word Error Rate) score computed from original ASR transcriptions
+            'anon_wer_score': WER (Word Error Rate) score computed from anonymized ASR transcriptions
+            'eer_scores': Dictionary with EER (Equal Error Rate) scores and thresholds for:
+                'orig_orig': original vs original embeddings
+                'orig_anon': original vs anonymized embeddings
+                'anon_anon': anonymized vs anonymized embeddings
     """
-    print(f'computing metrics and similarity similarity for {dataset}')
+    print(f'computing metrics and similarity for {dataset}')
     
-    num_rows = len(dataset)
-    speaker_ids1, speaker_ids2 = [], []
-    embeddings1_list, embeddings2_list = [], []
-    similarity_scores = []
-    positive_scores, negative_scores = [], []  # for EER
-    transcripts, predictions = [], [] # for WER
+    # Check if dataset has all the required columns
+    required_columns = ['speaker_id', 'embeddings', 'transcript', 'asr_transcription', 'anonymized_embeddings']
+    missing_columns = set(required_columns) - set(dataset.column_names)
+    if missing_columns:
+        raise ValueError(f"Dataset is missing the following columns: {', '.join(missing_columns)}")
+    
+    [
+        same_speakers,
+        orig_orig_similarity_scores, orig_anon_similarity_scores, anon_anon_similarity_scores, 
+        orig_orig_positive_scores, orig_orig_negative_scores,
+        orig_anon_positive_scores, orig_anon_negative_scores, 
+        anon_anon_positive_scores, anon_anon_negative_scores, 
+        orig_transcripts, anon_transcripts, predictions
 
-    for i in tqdm(range(num_rows)):
-        transcripts.append(dataset[i]['transcript'])
+    ] = [[] for _ in range(13)] 
+
+
+    for i in tqdm(range(len(dataset))):
+        orig_transcripts.append(dataset[i]['transcript'])
+        anon_transcripts.append(dataset[i]['asr_transcription_anon']['text']) # Anonymized audio that was transcribed
         predictions.append(dataset[i]['asr_transcription']['text'])
-        for j in range(i+1, num_rows):
+        for j in range(i+1, len(dataset)):
             speaker_id1, speaker_id2 = dataset[i]['speaker_id'], dataset[j]['speaker_id']
-            speaker_ids1.append(speaker_id1)
-            speaker_ids2.append(speaker_id2)
-            embedding1, embedding2 = torch.tensor(dataset[i]['embeddings']), torch.tensor(dataset[j]['embeddings'])
-            embeddings1_list.append(embedding1.tolist())
-            embeddings2_list.append(embedding2.tolist())
-            similarity_score = compute_similarity_score(embedding1, embedding2)
-            similarity_scores.append(similarity_score)
-            (positive_scores if speaker_id1 == speaker_id2 else negative_scores).append(similarity_score)
+            original_embedding1, original_embedding2 = torch.tensor(dataset[i]['embeddings']), torch.tensor(dataset[j]['embeddings'])
+            anonymized_embedding1, anonymized_embedding2 = torch.tensor(dataset[i]['anonymized_embeddings']), torch.tensor(dataset[j]['anonymized_embeddings'])
 
-    eer_score, threshold = EER(torch.tensor(positive_scores), torch.tensor(negative_scores))
+            same_speakers.append(speaker_id1 == speaker_id2)
+            orig_orig_similarity_score = compute_similarity_score(original_embedding1, original_embedding2)
+            orig_anon_similarity_score = compute_similarity_score(original_embedding1, anonymized_embedding2)
+            anon_anon_similarity_score = compute_similarity_score(anonymized_embedding1, anonymized_embedding2)
+            orig_orig_similarity_scores.append(orig_orig_similarity_score)
+            orig_anon_similarity_scores.append(orig_anon_similarity_score)
+            anon_anon_similarity_scores.append(anon_anon_similarity_score)
+            (orig_orig_positive_scores if speaker_id1 == speaker_id2 else orig_orig_negative_scores).append(orig_orig_similarity_score)
+            (orig_anon_positive_scores if speaker_id1 == speaker_id2 else orig_anon_negative_scores).append(orig_anon_similarity_score)
+            (anon_anon_positive_scores if speaker_id1 == speaker_id2 else anon_anon_negative_scores).append(anon_anon_similarity_score)
+
+    orig_orig_eer_score, orig_orig_threshold = EER(torch.tensor(orig_orig_positive_scores), torch.tensor(orig_orig_negative_scores))
+    orig_anon_eer_score, orig_anon_threshold = EER(torch.tensor(orig_anon_positive_scores), torch.tensor(orig_anon_negative_scores))
+    anon_anon_eer_score, anon_anon_threshold = EER(torch.tensor(anon_anon_positive_scores), torch.tensor(anon_anon_negative_scores))
+
     wer = WordErrorRate()
-    wer_score = wer(predictions, transcripts).item()
+    orig_wer_score = wer(predictions, orig_transcripts).item()
+    anon_wer_score = wer(predictions, anon_transcripts).item()
 
-    pairs_dataset = Dataset.from_dict({
-        'speaker_id1': speaker_ids1,
-        'speaker_id2': speaker_ids2,
-        'embedding1': embeddings1_list,
-        'embedding2': embeddings2_list,
-        'similarity_score': similarity_scores,
+    similarities = Dataset.from_dict({
+        'same_speaker': same_speakers,
+        'orig_orig_similarity_score': orig_orig_similarity_scores,
+        'orig_anon_similarity_score': orig_anon_similarity_scores,
+        'anon_anon_similarity_score': anon_anon_similarity_scores
     })
 
+    metrics = {
+        'similarities': similarities,
+        'orig_wer_score': orig_wer_score,
+        'anon_wer_score': anon_wer_score,
+        'eer_scores': {
+            'orig_orig': (orig_orig_eer_score, orig_orig_threshold),
+            'orig_anon': (orig_anon_eer_score, orig_anon_threshold),
+            'anon_anon': (anon_anon_eer_score, anon_anon_threshold)
+        }
+    }
+    
     print('done computing metrics and pairwise similarity')
-    return pairs_dataset, eer_score, wer_score
+    return metrics
 
-# def calculate_eer(dataset: Dataset) -> float:
-#     """
-#     Computes EER based on the similarity scores and labels in the dataset.
-    
-#     Args:
-#         dataset (Dataset): Dataset including columns ['speaker_id1', 'speaker_id2', 'embedding1', 'embedding2', 'similarity_score'].
-    
-#     Returns:
-#         float: The calculated EER and its threshold.
-#     """
-#     positive_scores = []
-#     negative_scores = []
-    
-#     for item in tqdm(dataset):
-#         speaker_id1 = item['speaker_id1']
-#         speaker_id2 = item['speaker_id2']
-#         embedding1 = torch.tensor(item['embedding1'])
-#         embedding2 = torch.tensor(item['embedding2'])
-#         similarity_score = compute_similarity_score(embedding1, embedding2)
-        
-#         if speaker_id1 == speaker_id2:
-#             positive_scores.append(similarity_score)
-#         else:
-#             negative_scores.append(similarity_score)
+def speaker_verification(path, from_disk=False, split=None) -> dict:
+    """
+    Perform speaker verification on the given dataset as described in the pipeline.
 
-#     eer, threshold = EER(torch.tensor(positive_scores), torch.tensor(negative_scores))
-#     return eer, threshold
+    Args:
+        path (str): Path to the dataset.
+        from_disk (bool): Whether to load dataset from local disk. Loads from Hugging Face if False.
+        split (str): Split of the dataset to use. Must be given if from_disk is false.
 
-
-# def calculate_wer(dataset: Dataset, predictions: dict[str, str]) -> float:
-#     """
-#     Computes Word Error Rate (WER) based on the predictions and transcripts in the dataset.
+    Returns:
+        dict: A dictionary containing computed metrics and the Dataset of cosine similarities.
+    """
+    if from_disk:
+        audio_dataset = load_from_disk(path)
+    else:
+        assert split is not None, "Split must be given if loading from Hugging Face."
+        audio_dataset = load_dataset(path, split=split, cache_dir=f"{CODEBASE_DIR}/tmp")
     
-#     Args:
-#         dataset (Dataset): Dataset including columns ['audio', 'speaker_id', 'transcript', 'embeddings'].
-#         predictions (Dict[str, str]): Dictionary mapping audio paths to predicted transcripts.
-
-#     Returns:
-#         float: The calculated WER.
-#     """
-#     assert len(dataset) == len(predictions), "Number of predictions should match the number of samples in the dataset"
-    
-#     # Sort dataset and predictions based on audio path
-#     sorted_dataset = sorted(dataset, key=lambda x: x['audio']['path'])
-#     sorted_predictions = [predictions[item['audio']['path']] for item in sorted_dataset]
-    
-#     transcripts = [item['transcript'] for item in sorted_dataset]
-    
-#     wer = WordErrorRate()
-#     wer_score = wer(sorted_predictions, transcripts)
-#     return wer_score
-def speaker_verification(dataset, split):
-    audio_dataset = load_dataset(dataset, split=split, cache_dir=f"{CODEBASE_DIR}/tmp")
     embeddings_dataset = process_data_to_embeddings(audio_dataset)
-    similarities, eer_score, wer_score = compute_metrics_and_similarity(embeddings_dataset)
-    embeddings_dataset.push_to_hub(dataset, commit_message='uploading embeddings')
-    # structure of similarities is vastly different, so upload as a separate dataset
-    similarities.push_to_hub(f"{dataset}-similarities", commit_message=f'uploading similarities. EER: {eer_score:.4f}, WER: {wer_score:.4f}')
+    output = compute_metrics(embeddings_dataset)
+    return output
 
 def main():    
 
     ###############################################################################
     # TODO: Set the params here before running the script
-    dataset_name = f"azain/LibriTTS-dev-clean-16khz-mono-loudnorm-100-random-samples-2024-04-18-17-34-39"
+    dataset_path = f"{CODEBASE_DIR}/data/processed/LibriTTS-dev-100-samples-anon"
+    from_disk = True
     split='dev'
     ###############################################################################
-    audio_dataset = load_dataset(dataset_name, split=split, cache_dir=f"{CODEBASE_DIR}/tmp")
-    print(audio_dataset[0])
-    embeddings_dataset = process_data_to_embeddings(audio_dataset)
-    similarities, eer_score, wer_score = compute_metrics_and_similarity(embeddings_dataset)
-    metadata_description = f"EER: {eer_score:.4f}, WER: {wer_score:.4f}"
-    similarities.info.description = metadata_description
-    embeddings_dataset.push_to_hub(dataset_name, commit_message='uploading embeddings')
-    # structure of similarities is vastly different, so upload as a separate dataset
-    similarities.push_to_hub(f"{dataset_name}-similarities", commit_message=f'uploading similarities EER: {eer_score:.4f}, WER: {wer_score:.4f}')
+    metrics = speaker_verification(dataset_path, from_disk, split)
+    metrics['similarities'].save_to_disk(f"{CODEBASE_DIR}/data/processed/LibriTTS-dev-100-samples-similarities")
+    with open(f"{CODEBASE_DIR}/data/processed/LibriTTS-dev-100-samples-metrics.json", "w") as f:
+        json.dump({k: v for k, v in metrics.items() if k != 'similarities'}, f, indent=4)
+    print(metrics)
 
 if __name__ == "__main__":
     main()

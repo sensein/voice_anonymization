@@ -80,7 +80,6 @@ class VoiceAnonymizer:
         - np.array: The converted output waveform.
         """
         # Process text files and synthesize voice
-        print("Synthesizing...")
         with torch.no_grad():
             target_waveform, _ = librosa.effects.trim(target_waveform, top_db=20)
 
