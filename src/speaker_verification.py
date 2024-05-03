@@ -5,48 +5,39 @@ from speechbrain.inference.speaker import EncoderClassifier
 from speechbrain.utils.metric_stats import EER
 from tqdm import tqdm
 from torchmetrics.text import WordErrorRate
+import huggingface_hub
+from datasets import Dataset, Audio
+
+def add_embeddings(item: dict) -> dict:
+    """
+    Adds embeddings to each dataset item using a pre-trained model.
+
+    Args:
+        item (dict): Contains the 'audio' key with subkey 'array'.
+
+    Returns:
+        dict: The item with a new 'embeddings' key holding the computed embeddings as a numpy array.
+    """
+    classifier = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb", savedir="./models/spkrec-ecapa-voxceleb")
+    waveform = torch.tensor(item['audio']['array']).squeeze()
+    embeddings = classifier.encode_batch(waveform.unsqueeze(0)).squeeze()  # Process embedding
+    item['embeddings'] = embeddings.numpy()
+    return item
 
 def process_data_to_embeddings(audio_dataset: Dataset) -> Dataset:
     """
-    Processes audio data from the given dataset to generate and save embeddings for each entry.
+    Enhances an audio dataset by computing and adding embeddings for each entry.
 
     Args:
-        audio_dataset (Dataset): The dataset containing audio files and their corresponding metadata.
+        audio_dataset (datasets.Dataset): Dataset containing audio data.
 
     Returns:
-        Dataset: A new Dataset object containing the original audio, computed embeddings and existing metadata.
-    
-    References:
-        https://github.com/sensein/fab/blob/main/tutorials/voice_anonymization/voice_anonymization.ipynb
+        datasets.Dataset: The dataset with an added 'embeddings' column.
     """
-    classifier = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb", savedir=f"{CODEBASE_DIR}/models/spkrec-ecapa-voxceleb") # todo fix this codebase_dir nonsense
-    processed_data = {
-        'audio': [],
-        'transcript': [],
-        'speaker_id': [],
-        'embeddings': []
-    }
+    updated_dataset = audio_dataset.map(add_embeddings, batched=False)
+    return updated_dataset
 
-    print(f'computing embeddings for {audio_dataset}')
-    for item in tqdm(audio_dataset):
-        assert isinstance(item, dict), "error getting item from audio_dataset. items in audio_dataset should be dictionaries"
-        
-        assert 'audio' in item, "item should have an audio key"
-        audio : dict = item['audio']
-        
-        assert classifier is not None, "error computing embeddings. Classifier should not be None" # todo eventually move assertions when creating tests
-        waveform : torch.Tensor = torch.tensor(audio['array']).squeeze()
-        embeddings : torch.Tensor = classifier.encode_batch(waveform.unsqueeze(0)).squeeze() # unsqueeze to turn [time] -> [batch, time], then squeeze after computing embedding
-        
-        processed_data['audio'].append(audio) # todo do I keep this? embeddings already calculated
-        processed_data['transcript'].append(item.get('transcript', ''))
-        processed_data['speaker_id'].append(item.get('speaker_id', ''))
-        processed_data['embeddings'].append(embeddings.numpy()) # todo can think about storing directly as tensor
-
-    print('done computing embeddings')
-    return Dataset.from_dict(processed_data)
-
-def compute_similarity_score(embedding1, embedding2): # todo could try ECAPA too
+def compute_similarity_score(embedding1: torch.Tensor, embedding2: torch.Tensor) -> float: # todo could try ECAPA too
     """
     Computes the similarity score between two embeddings using cosine similarity.
 
@@ -56,138 +47,132 @@ def compute_similarity_score(embedding1, embedding2): # todo could try ECAPA too
     cos = torch.nn.CosineSimilarity(dim=-1)
     return cos(embedding1, embedding2).item()
 
-def compute_pairwise_similarity(dataset: Dataset) -> Dataset: # todo compare between concated waveforms 
+def compute_metrics_and_similarity(dataset: Dataset) -> tuple[Dataset, float, float]:
     """
-    Computes cosine similarity across all pairs of embeddings in the dataset.
+    Computes pairwise embeddings similarity and evaluates EER and WER for the dataset.
 
     Args:
-        dataset (Dataset): Dataset including columns ['speaker_id', 'embeddings'].
+        dataset (Dataset): Dataset including columns ['speaker_id', 'embeddings', 'transcript', 'asr_transcription'].
 
     Returns:
-        Dataset: A new Dataset object with columns ['speaker_id1', 'speaker_id2', 'embedding1', 'embedding2', 'similarity_score'].
+        tuple: A tuple containing:
+            - Dataset with columns ['speaker_id1', 'speaker_id2', 'embedding1', 'embedding2', 'similarity_score'].
+            - EER (Equal Error Rate) score for the dataset.
+            - WER (Word Error Rate) score computed from ASR transcriptions.
     """
-    print(f'computing pairwise similarity for {dataset}')
+    print(f'computing metrics and similarity similarity for {dataset}')
+    
     num_rows = len(dataset)
-    speaker_ids1 = []
-    speaker_ids2 = []
+    speaker_ids1, speaker_ids2 = [], []
+    embeddings1_list, embeddings2_list = [], []
     similarity_scores = []
-    embeddings1_list = []
-    embeddings2_list = []
-
-    # For EER and WER
-    same_speakers = []
-    predictions = []
-    references = []
+    positive_scores, negative_scores = [], []  # for EER
+    transcripts, predictions = [], [] # for WER
 
     for i in tqdm(range(num_rows)):
+        transcripts.append(dataset[i]['transcript'])
+        predictions.append(dataset[i]['asr_transcription']['text'])
         for j in range(i+1, num_rows):
-            speaker_id1 = dataset[i]['speaker_id']
-            speaker_id2 = dataset[j]['speaker_id']
-            embedding1 = torch.tensor(dataset[i]['embeddings'])
-            embedding2 = torch.tensor(dataset[j]['embeddings'])
-
-            similarity_score = compute_similarity_score(embedding1, embedding2)
+            speaker_id1, speaker_id2 = dataset[i]['speaker_id'], dataset[j]['speaker_id']
             speaker_ids1.append(speaker_id1)
             speaker_ids2.append(speaker_id2)
-            similarity_scores.append(similarity_score)
+            embedding1, embedding2 = torch.tensor(dataset[i]['embeddings']), torch.tensor(dataset[j]['embeddings'])
             embeddings1_list.append(embedding1.tolist())
             embeddings2_list.append(embedding2.tolist())
-            
-            same_speakers.append(int(speaker_id1 == speaker_id2))
+            similarity_score = compute_similarity_score(embedding1, embedding2)
+            similarity_scores.append(similarity_score)
+            (positive_scores if speaker_id1 == speaker_id2 else negative_scores).append(similarity_score)
 
-            # Collect transcripts for WER calculation
-            predictions.append(dataset[j]['transcript'])
-            references.append(dataset[i]['transcript'])
-
-    eer_scores = EER(torch.tensor(similarity_scores), torch.tensor(same_speakers))
+    eer_score, threshold = EER(torch.tensor(positive_scores), torch.tensor(negative_scores))
     wer = WordErrorRate()
-    wer_scores = wer(predictions, references)
+    wer_score = wer(predictions, transcripts).item()
 
     pairs_dataset = Dataset.from_dict({
         'speaker_id1': speaker_ids1,
         'speaker_id2': speaker_ids2,
         'embedding1': embeddings1_list,
         'embedding2': embeddings2_list,
-        'similarity_score': similarity_scores
+        'similarity_score': similarity_scores,
     })
-    print('done computing pairwise similarity')
-    return pairs_dataset
 
-def calculate_eer(dataset: Dataset) -> float:
-    """
-    Computes EER based on the similarity scores and labels in the dataset.
+    print('done computing metrics and pairwise similarity')
+    return pairs_dataset, eer_score, wer_score
+
+# def calculate_eer(dataset: Dataset) -> float:
+#     """
+#     Computes EER based on the similarity scores and labels in the dataset.
     
-    Args:
-        dataset (Dataset): Dataset including columns ['speaker_id1', 'speaker_id2', 'embedding1', 'embedding2', 'similarity_score'].
+#     Args:
+#         dataset (Dataset): Dataset including columns ['speaker_id1', 'speaker_id2', 'embedding1', 'embedding2', 'similarity_score'].
     
-    Returns:
-        float: The calculated EER and its threshold.
-    """
-    positive_scores = []
-    negative_scores = []
+#     Returns:
+#         float: The calculated EER and its threshold.
+#     """
+#     positive_scores = []
+#     negative_scores = []
     
-    for item in tqdm(dataset):
-        speaker_id1 = item['speaker_id1']
-        speaker_id2 = item['speaker_id2']
-        embedding1 = torch.tensor(item['embedding1'])
-        embedding2 = torch.tensor(item['embedding2'])
-        similarity_score = compute_similarity_score(embedding1, embedding2)
+#     for item in tqdm(dataset):
+#         speaker_id1 = item['speaker_id1']
+#         speaker_id2 = item['speaker_id2']
+#         embedding1 = torch.tensor(item['embedding1'])
+#         embedding2 = torch.tensor(item['embedding2'])
+#         similarity_score = compute_similarity_score(embedding1, embedding2)
         
-        if speaker_id1 == speaker_id2:
-            positive_scores.append(similarity_score)
-        else:
-            negative_scores.append(similarity_score)
+#         if speaker_id1 == speaker_id2:
+#             positive_scores.append(similarity_score)
+#         else:
+#             negative_scores.append(similarity_score)
 
-    eer, threshold = EER(torch.tensor(positive_scores), torch.tensor(negative_scores))
-    return eer, threshold
+#     eer, threshold = EER(torch.tensor(positive_scores), torch.tensor(negative_scores))
+#     return eer, threshold
 
 
-def calculate_wer(dataset: Dataset, predictions: dict[str, str]) -> float:
-    """
-    Computes Word Error Rate (WER) based on the predictions and transcripts in the dataset.
+# def calculate_wer(dataset: Dataset, predictions: dict[str, str]) -> float:
+#     """
+#     Computes Word Error Rate (WER) based on the predictions and transcripts in the dataset.
     
-    Args:
-        dataset (Dataset): Dataset including columns ['audio', 'speaker_id', 'transcript', 'embeddings'].
-        predictions (Dict[str, str]): Dictionary mapping audio paths to predicted transcripts.
+#     Args:
+#         dataset (Dataset): Dataset including columns ['audio', 'speaker_id', 'transcript', 'embeddings'].
+#         predictions (Dict[str, str]): Dictionary mapping audio paths to predicted transcripts.
 
-    Returns:
-        float: The calculated WER.
-    """
-    assert len(dataset) == len(predictions), "Number of predictions should match the number of samples in the dataset"
+#     Returns:
+#         float: The calculated WER.
+#     """
+#     assert len(dataset) == len(predictions), "Number of predictions should match the number of samples in the dataset"
     
-    # Sort dataset and predictions based on audio path
-    sorted_dataset = sorted(dataset, key=lambda x: x['audio']['path'])
-    sorted_predictions = [predictions[item['audio']['path']] for item in sorted_dataset]
+#     # Sort dataset and predictions based on audio path
+#     sorted_dataset = sorted(dataset, key=lambda x: x['audio']['path'])
+#     sorted_predictions = [predictions[item['audio']['path']] for item in sorted_dataset]
     
-    references = [item['transcript'] for item in sorted_dataset]
+#     transcripts = [item['transcript'] for item in sorted_dataset]
     
-    wer = WordErrorRate()
-    wer_score = wer(sorted_predictions, references)
-    return wer_score
+#     wer = WordErrorRate()
+#     wer_score = wer(sorted_predictions, transcripts)
+#     return wer_score
+def speaker_verification(dataset, split):
+    audio_dataset = load_dataset(dataset, split=split, cache_dir=f"{CODEBASE_DIR}/tmp")
+    embeddings_dataset = process_data_to_embeddings(audio_dataset)
+    similarities, eer_score, wer_score = compute_metrics_and_similarity(embeddings_dataset)
+    embeddings_dataset.push_to_hub(dataset, commit_message='uploading embeddings')
+    # structure of similarities is vastly different, so upload as a separate dataset
+    similarities.push_to_hub(f"{dataset}-similarities", commit_message=f'uploading similarities. EER: {eer_score:.4f}, WER: {wer_score:.4f}')
 
-def main():
-    dataset_name = f"azain/LibriTTS-dev-clean-16khz-mono-loudnorm-100-random-samples"
-    audio_dataset = load_dataset(dataset_name)
-    
-    ### # TODO temporarily do this since I cant push datasets to HuggingFace
-    # processed_data_path = f"{CODEBASE_DIR}/tmp/LibriTTS-processed"
-    # transcript_path_pattern = "{base_name}.original.txt"
-    # from preprocessing import create_audio_dataset
-    # audio_dataset = create_audio_dataset(processed_data_path, transcript_path_pattern)
-    # audio_dataset = audio_dataset.shuffle(seed=42) # shuffle to get random samples
-    # audio_dataset = audio_dataset.select(range(100)) # small dataset for testing
-    # print(f"{audio_dataset=}")
-    ###
+def main():    
 
     ###############################################################################
     # TODO: Set the params here before running the script
-    embeddings_dataset_path = f"{CODEBASE_DIR}/tmp/LibriTTS-processed-with-embeddings-small-shuffled"
-    similarities_dataset_path = f"{CODEBASE_DIR}/tmp/LibriTTS-processed-with-embeddings-small-shuffled-similarities"
+    dataset_name = f"azain/LibriTTS-dev-clean-16khz-mono-loudnorm-100-random-samples-2024-04-18-17-34-39"
+    split='dev'
     ###############################################################################
+    audio_dataset = load_dataset(dataset_name, split=split, cache_dir=f"{CODEBASE_DIR}/tmp")
+    print(audio_dataset[0])
     embeddings_dataset = process_data_to_embeddings(audio_dataset)
-    embeddings_dataset.save_to_disk(embeddings_dataset_path)
-    similarities = compute_pairwise_similarity(embeddings_dataset)
-    similarities.save_to_disk(similarities_dataset_path)
+    similarities, eer_score, wer_score = compute_metrics_and_similarity(embeddings_dataset)
+    metadata_description = f"EER: {eer_score:.4f}, WER: {wer_score:.4f}"
+    similarities.info.description = metadata_description
+    embeddings_dataset.push_to_hub(dataset_name, commit_message='uploading embeddings')
+    # structure of similarities is vastly different, so upload as a separate dataset
+    similarities.push_to_hub(f"{dataset_name}-similarities", commit_message=f'uploading similarities EER: {eer_score:.4f}, WER: {wer_score:.4f}')
 
 if __name__ == "__main__":
     main()

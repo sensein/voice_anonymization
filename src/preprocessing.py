@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 import re
 from datetime import datetime
-from utils import yield_filtered_files, CODEBASE_DIR
+from src.utils import yield_filtered_files, CODEBASE_DIR
 
 def resample_audio(audio_path: str, target_sample_rate: int=16000) -> tuple[torch.Tensor, int]:
     """
@@ -138,7 +138,7 @@ def create_audio_dataset(dataset_path: str, transcript_path_pattern: str = "{bas
     print('done creating audio dataset')
     return audio_dataset
 
-def upload_to_huggingface(audio_dataset: Dataset, dataset_name: str, split: str | None = None) -> None:
+def upload_to_huggingface(audio_dataset: Dataset, dataset_name: str, split: str | None = None, is_private: bool = True) -> None:
     """
     Uploads the processed dataset to Hugging Face Hub. Assumes already logged in to Hugging Face.
 
@@ -160,7 +160,7 @@ def upload_to_huggingface(audio_dataset: Dataset, dataset_name: str, split: str 
         token=token, 
         split=split,
         commit_message=f"Add {split} split at date {date}",
-        private=False,
+        private=is_private,
         ) # TODO: This hangs on "Creating parquet from Arrow format" for some reason
     print(f'Dataset uploaded to Hugging Face as {dataset_name}.')
 
@@ -181,24 +181,11 @@ def upload_to_huggingface(audio_dataset: Dataset, dataset_name: str, split: str 
 #         dest_file = processed_path / transcript_file.name  # Use only filename for destination
 #         shutil.copy(transcript_file, dest_file)
 
-
-def main():
-    date = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    ###############################################################################
-    # TODO: Set the params here before running the script
-    raw_data_path = f'{CODEBASE_DIR}/data/raw/LibriTTS/dev-clean'
-    processed_data_path = f'{CODEBASE_DIR}/data/processed/LibriTTS-dev-clean-16khz-mono-loudnorm'
-    transcript_path_pattern = "{base_name}.original.txt" # wont work if no relation with audio file name
-    speaker_id_pattern = r"(\d+)_" # get all digits before first underscore in filename
-    target_sample_rate = 16000
-    num_samples = 100
-    dataset_name = f"LibriTTS-dev-clean-16khz-mono-loudnorm-{num_samples}-random-samples-{date}"
-    split = 'dev'
-    file_extensions = ['.wav']
-    ###############################################################################
+def preprocess(raw_data_path: str, processed_data_path: str, transcript_path_pattern: str, 
+               speaker_id_pattern: str, target_sample_rate: int, num_samples: int, 
+               file_extensions: list[str]) -> Dataset:
     os.makedirs(processed_data_path, exist_ok=True)
 
-    # Process Logic
     for root, file_name in yield_filtered_files(raw_data_path, lambda file_name: any(file_name.endswith(ext) for ext in file_extensions)):
         # skip already processed file
         processed_audio_path = os.path.join(processed_data_path, file_name)
@@ -227,8 +214,26 @@ def main():
     # Upload to Hugging Face
     audio_dataset = create_audio_dataset(processed_data_path, transcript_path_pattern, speaker_id_pattern, file_extensions)
     audio_dataset = audio_dataset.shuffle(seed=42).select(range(num_samples)) # TODO - TEMPORARY FOR TESTING.
-    print(audio_dataset.column_names)
-    print(audio_dataset[0])
+    return audio_dataset
+
+def main():
+    date = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    ###############################################################################
+    # TODO: Set the params here before running the script
+    raw_data_path = f'{CODEBASE_DIR}/data/raw/LibriTTS/dev-clean'
+    processed_data_path = f'{CODEBASE_DIR}/data/processed/LibriTTS-dev-clean-16khz-mono-loudnorm'
+    transcript_path_pattern = "{base_name}.original.txt" # wont work if no relation with audio file name
+    speaker_id_pattern = r"(\d+)_" # get all digits before first underscore in filename
+    target_sample_rate = 16000
+    num_samples = 100
+    dataset_name = f"LibriTTS-dev-clean-16khz-mono-loudnorm-{num_samples}-random-samples-{date}"
+    split = 'dev'
+    file_extensions = ['.wav']
+    ###############################################################################
+    audio_dataset = preprocess(
+        raw_data_path, processed_data_path, transcript_path_pattern, speaker_id_pattern,
+        target_sample_rate, num_samples, dataset_name, split, file_extensions
+        )
     upload_to_huggingface(audio_dataset, dataset_name, split)
 
 if __name__ == "__main__":

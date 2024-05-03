@@ -1,69 +1,59 @@
 from src.utils import CODEBASE_DIR
 from datasets import Dataset, load_dataset
 import torch
-from TTS.api import TTS # todo swap for freevc directly https://github.com/OlaWod/FreeVC
 import soundfile as sf
 from tqdm import tqdm
-#add issue about push_to_hub, maybe opening ports to internet
-#use freevc instead of tts (check fabio code history)
-#order pipeline all together
-def load_and_convert_audio(audio_dataset: Dataset, target_voice_model: str = "voice_conversion_models/multilingual/vctk/freevc24") -> Dataset:
+from src.freevc import VoiceAnonymizer
+
+anonymizer = VoiceAnonymizer()
+
+def anonymize_audio(item, target_item):
     """
-    Loads audio data and converts it using a specified TTS model. Adds the converted audio waveform to the dataset.
+    Processes audio data from the dataset using source and target waveforms to generate an anonymized waveform that mimics the acoustic properties of the target.
+
+    Args:
+        item (dict): A dictionary for the source audio containing keys 'audio' with subkeys 'array' and 'sample_rate'.
+        target_item (dict): A dictionary for the target audio, structured like the source with keys 'audio'.
+
+    Returns:
+        dict: The source item enhanced with keys 'converted_audio_waveform' for the anonymized audio.
+    """
+    # Assuming anonymizer is an instance of a class that supports anonymization using a target waveform
+    waveform = anonymizer.anonymize(
+        item['audio']['array'], 
+        target_item['audio']['array'],
+    )
+
+    # item['converted_audio_waveform'] = waveform # TODO do i modify rest of pipeline to support this new column
+    item['audio']['array'] = waveform
+
+    return item
+
+def voice_convert(audio_dataset: Dataset, target_index: int) -> Dataset:
+    """
+    Voice converts given audio dataset using anonymize_audio.
 
     Args:
         audio_dataset (Dataset): The dataset containing audio files and their corresponding metadata.
-        target_voice_model (str): Path to the Coqui TTS model for voice conversion, defaults to 'voice_conversion_models/multilingual/vctk/freevc24'.
+        target_index (int): The index of the target audio file to use for conversion.
 
     Returns:
-        Dataset: A new Dataset object containing the original audio, transcript, speaker_id, and the converted audio waveform.
+        Dataset: A new Dataset object containing the original metadata but with audio arrays replaced by anonymized versions.
     """
-    tts = TTS(target_voice_model)
-    processed_data = {
-        'original_audio': [],
-        'converted_audio_waveform': [],
-        'converted_audio_sample_rate': [],
-        'transcript': [],
-        'speaker_id': []
-    }
-
-    print('Starting voice conversion process')
-    for item in tqdm(audio_dataset):
-        assert 'audio' in item and 'transcript' in item, "Each item must have 'audio' and 'transcript' keys"
-        
-        audio_data = item['audio']
-        transcript = item['transcript']
-        waveform, sample_rate = tts.tts(transcript)
-
-        processed_data['original_audio'].append(audio_data)
-        processed_data['converted_audio_waveform'].append(waveform)
-        processed_data['converted_audio_sample_rate'].append(sample_rate)
-        processed_data['transcript'].append(transcript)
-        processed_data['speaker_id'].append(item['speaker_id'])
-
-    print('Voice conversion completed')
-    return Dataset.from_dict(processed_data)
+    target_item = audio_dataset[target_index] # todo can get a random one too
+    updated_dataset = audio_dataset.map(anonymize_audio, fn_kwargs={'target_item': target_item})
+    return updated_dataset
 
 def main():
 
     ###############################################################################
     # TODO: Set the params here before running the script
-    # hf_dataset_name = "azain/LibriTTS-processed"
-    converted_dataset_path = f"{CODEBASE_DIR}/tmp/LibriTTS-processed-with-embeddings-converted"
+    dataset_name = f"azain/LibriTTS-dev-clean-16khz-mono-loudnorm-100-random-samples-2024-04-18-17-34-39"
     ###############################################################################
 
-    # audio_dataset = load_dataset(hf_dataset_name)
-    ### TODO temporarily do this since I cant push datasets to HuggingFace
-    processed_data_path = f"{CODEBASE_DIR}/tmp/LibriTTS-processed"
-    transcript_path_pattern = "{base_name}.original.txt"
-    from preprocessing import create_audio_dataset
-    audio_dataset = create_audio_dataset(processed_data_path, transcript_path_pattern)
-    audio_dataset = audio_dataset.shuffle(seed=42) # shuffle to get random samples
-    audio_dataset = audio_dataset.select(range(100)) # small dataset for testing
-    ###
-
-    converted_dataset = load_and_convert_audio(audio_dataset)
-    converted_dataset.save_to_disk(converted_dataset_path)  # todo push to hub whenever that works
+    audio_dataset = load_dataset(dataset_name)
+    converted_dataset = voice_convert(audio_dataset)
+    converted_dataset.push_to_hub(dataset_name, commit_message="after voice conversion")
 
 if __name__ == "__main__":
     main()
