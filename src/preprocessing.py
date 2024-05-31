@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 from datetime import datetime
 from src.utils import yield_filtered_files, CODEBASE_DIR
+import pandas as pd
 
 def resample_audio(audio_path: str, target_sample_rate: int=16000) -> tuple[torch.Tensor, int]:
     """
@@ -86,10 +87,12 @@ def load_transcript(transcript_path):
         return file.read().strip()
     
 def create_audio_dataset(dataset_path: str, transcript_path_pattern: str = "{base_name}.txt", 
-                         speaker_id_pattern: str = r"(\d+)_", file_extensions: list[str] = ['.wav']) -> Dataset:
+                         speaker_id_pattern: str = r"(\d+)_", file_extensions: list[str] = ['.wav'],
+                         speaker_info_path: str = None, speaker_id_column: str = None, gender_column: str = None) -> Dataset:
     """
     Loads audio files from a specified directory into a Hugging Face `datasets` dataset, including transcripts. 
     The function dynamically finds transcripts and extracts speaker IDs based on a provided pattern, accommodating various audio file extensions.
+    Optionally, it maps speaker IDs to genders based on a provided CSV file.
 
     Args:
         dataset_path (str): Path to the directory containing audio files.
@@ -97,45 +100,56 @@ def create_audio_dataset(dataset_path: str, transcript_path_pattern: str = "{bas
     will be replaced by the audio file's base name without extension.
         speaker_id_pattern (str, optional): Regex pattern to extract the speaker ID from the file name.
         file_extensions (list[str], optional): List of audio file extensions to include in the dataset.
+        speaker_info_path (str, optional): Path to the CSV file containing speaker information.
+        speaker_id_column (str, optional): Name of the column containing speaker IDs in the CSV file. Must be provided if speaker_info_path is provided.
+        gender_column (str, optional): Name of the column containing gender information in the CSV file. Must be provided if speaker_info_path is provided.
 
     Returns:
-        datasets.Dataset: A dataset object containing audio files and their transcripts and speaker ids.
+        datasets.Dataset: A dataset object containing audio files and their transcripts, speaker ids, and optionally genders.
 
     Example:
     --------
     To load a dataset where audio files named 'audio123.wav' have transcripts named 'audio123_transcript.txt':
     >>> dataset = create_audio_dataset("/path/to/files", "{base_name}_transcript.txt")
     """
-    print(f'loading files from {dataset_path}...')
+    speaker_gender_map = {}
+    if speaker_info_path:
+        if not speaker_id_column or not gender_column:
+            raise ValueError("Both speaker_id_column and gender_column must be provided if speaker_info_path is provided.")
+        speaker_data = pd.read_csv(speaker_info_path)
+        speaker_data[speaker_id_column] = speaker_data[speaker_id_column].astype(str).str.strip()
+        speaker_data[gender_column] = speaker_data[gender_column].str.strip()
+        speaker_gender_map = dict(zip(speaker_data[speaker_id_column].astype(str), speaker_data[gender_column]))
+
     audio_files = []
     transcripts = []
     speaker_ids = []
-    for root, file_name in yield_filtered_files(dataset_path, lambda name: any(name.endswith(ext) for ext in file_extensions)):
-        # print(root, file_name)
-        audio_path = os.path.join(root, file_name)
-        base_name = os.path.splitext(file_name)[0]  # Removes extension from file name
-
-        # Construct transcript path using the pattern, replacing {base_name} placeholder
+    genders = []
+    
+    for root, file_name in yield_filtered_files(dataset_path, lambda name: any(name.endswith(ext) for ext in file_extensions)):        
+        base_name = os.path.splitext(file_name)[0]  # remove extension from file name
         transcript_path = os.path.join(root, transcript_path_pattern.format(base_name=base_name))
-        if os.path.exists(transcript_path):
-            transcript = load_transcript(transcript_path)
-        else:
-            print(f"Transcript not found for {audio_path}. Skipping audio file.")
-            continue
-        
         speaker_id_match = re.match(speaker_id_pattern, base_name)
-        if speaker_id_match:
-            speaker_id = speaker_id_match.group(1)
-        else:
+        
+        if not os.path.exists(transcript_path):
+            print(f"Transcript not found for file name {file_name}. Skipping audio file.")
+            continue
+
+        if speaker_id_match is None:
             print(f"Speaker ID not found in file name {file_name}. Skipping audio file.")
             continue
+
+        audio_path = os.path.join(root, file_name)
+        transcript = load_transcript(transcript_path)
+        speaker_id = speaker_id_match.group(1)
+        gender = speaker_gender_map.get(speaker_id, 'Unknown') if speaker_info_path else 'Not Provided'
 
         audio_files.append(audio_path)
         transcripts.append(transcript)
         speaker_ids.append(speaker_id)
+        genders.append(gender)
 
-    audio_dataset = Dataset.from_dict({"audio": audio_files, "transcript": transcripts, "speaker_id": speaker_ids}).cast_column("audio", Audio())
-    print('done creating audio dataset')
+    audio_dataset = Dataset.from_dict({"audio": audio_files, "transcript": transcripts, "speaker_id": speaker_ids, "gender": genders}).cast_column("audio", Audio())
     return audio_dataset
 
 def upload_to_huggingface(audio_dataset: Dataset, dataset_name: str, split: str | None = None, is_private: bool = True) -> None:
@@ -182,8 +196,49 @@ def upload_to_huggingface(audio_dataset: Dataset, dataset_name: str, split: str 
 #         shutil.copy(transcript_file, dest_file)
 
 def preprocess(raw_data_path: str, processed_data_path: str, transcript_path_pattern: str, 
-               speaker_id_pattern: str, target_sample_rate: int, num_samples: int, 
-               file_extensions: list[str]) -> Dataset:
+               speaker_id_pattern: str, file_extensions: list[str] = ['wav'], target_sample_rate: int = 16000, 
+               num_samples: int = None, speaker_info_path: str = None, speaker_id_column: str = None, 
+               gender_column: str = None) -> Dataset:
+    """
+    Preprocesses raw audio data into a standardized format, including audio files, transcripts, speaker IDs, and optionally genders.
+    The function dynamically finds transcripts, extracts speaker IDs based on a provided pattern, resamples audio files, and truncates them to a fixed number of samples.
+
+    Args:
+        raw_data_path (str): Path to the directory containing raw audio files.
+        processed_data_path (str): Path to save the processed dataset.
+        transcript_path_pattern (str): Format string to locate transcript files, where "{base_name}" will be replaced by the audio file's base name without extension.
+        speaker_id_pattern (str): Regex pattern to extract the speaker ID from the file name.
+        file_extensions (list[str], optional): List of audio file extensions to include in the dataset. Defaults to ['wav'].
+        target_sample_rate (int, optional): Target sample rate for resampling the audio files. Defaults to 16000.
+        num_samples (int, optional): Number of samples to truncate or pad the audio files to. Defaults to all samples. If truncated, samples are selected randomly.
+        speaker_info_path (str, optional): Path to the CSV file containing speaker information. Defaults to None.
+        speaker_id_column (str, optional): Name of the column containing speaker IDs in the CSV file. Must be provided if `speaker_info_path` is provided.
+        gender_column (str, optional): Name of the column containing gender information in the CSV file. Must be provided if `speaker_info_path` is provided.
+
+    Returns:
+        datasets.Dataset: A dataset object containing processed audio files, their transcripts, speaker IDs, and optionally genders.
+
+    Raises:
+        ValueError: If `speaker_info_path` is provided but `speaker_id_column` or `gender_column` are not provided.
+
+    Example:
+    --------
+    To preprocess a dataset where audio files named 'audio123.wav' have transcripts named 'audio123_transcript.txt', 
+    resample to 16kHz, and truncate to 100 samples:
+    >>> dataset = preprocess(
+            raw_data_path="/path/to/raw/files",
+            processed_data_path="/path/to/save/processed/files",
+            transcript_path_pattern="{base_name}_transcript.txt",
+            speaker_id_pattern=r"(\d+)_",
+            file_extensions=['.wav'],
+            target_sample_rate=16000,
+            num_samples=100,
+            speaker_info_path="speakers.csv",
+            speaker_id_column="speaker_id",
+            gender_column="gender"
+        )
+    """
+    print(f'processing files for {raw_data_path}...')
     os.makedirs(processed_data_path, exist_ok=True)
 
     for root, file_name in yield_filtered_files(raw_data_path, lambda file_name: any(file_name.endswith(ext) for ext in file_extensions)):
@@ -212,8 +267,10 @@ def preprocess(raw_data_path: str, processed_data_path: str, transcript_path_pat
         torchaudio.save(processed_audio_path, waveform, sr)
 
     # Upload to Hugging Face
-    audio_dataset = create_audio_dataset(processed_data_path, transcript_path_pattern, speaker_id_pattern, file_extensions)
-    audio_dataset = audio_dataset.shuffle(seed=42).select(range(num_samples)) # TODO - TEMPORARY FOR TESTING.
+    audio_dataset = create_audio_dataset(processed_data_path, transcript_path_pattern, speaker_id_pattern, 
+                                         file_extensions, speaker_info_path, speaker_id_column, gender_column)
+    if num_samples: audio_dataset = audio_dataset.shuffle(seed=42).select(range(num_samples))
+    print('processed files successfully')
     return audio_dataset
 
 def main():
@@ -229,6 +286,7 @@ def main():
     dataset_name = f"LibriTTS-dev-clean-16khz-mono-loudnorm-{num_samples}-random-samples-{date}"
     split = 'dev'
     file_extensions = ['.wav']
+    
     ###############################################################################
     audio_dataset = preprocess(
         raw_data_path, processed_data_path, transcript_path_pattern, speaker_id_pattern,

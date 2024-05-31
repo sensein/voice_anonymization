@@ -8,7 +8,7 @@ def plot_similarity_scores(similarity_dataset):
     scenarios = ['orig_orig_similarity_score', 'orig_anon_similarity_score', 'anon_anon_similarity_score']
 
     df = pd.DataFrame(similarity_dataset)
-
+    eps = 0.01
     for i, scenario in enumerate(scenarios):
         df_same = df[df['same_speaker'] == True][scenario].dropna()
         df_diff = df[df['same_speaker'] == False][scenario].dropna()
@@ -21,7 +21,8 @@ def plot_similarity_scores(similarity_dataset):
         axs[i].set_title(titles[i])
         axs[i].set_xlabel('Similarity Score')
         axs[i].set_ylabel('Percentage (%)')
-        axs[i].set_xlim([-1, 1]) # bound from min to max +- eps
+        min_score = min(df_same.min(), df_diff.min())
+        axs[i].set_xlim([min_score - eps, 1])
         axs[i].legend()
 
     plt.tight_layout()
