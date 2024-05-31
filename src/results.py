@@ -21,23 +21,37 @@ def plot_similarity_scores(similarity_dataset):
         axs[i].set_title(titles[i])
         axs[i].set_xlabel('Similarity Score')
         axs[i].set_ylabel('Percentage (%)')
-        axs[i].set_xlim([-1, 1])
+        axs[i].set_xlim([-1, 1]) # bound from min to max +- eps
         axs[i].legend()
 
     plt.tight_layout()
     plt.show()
 
-def plot_wer_scores(orig_wer_score, anon_wer_score):
+def plot_wer_scores(orig_wer_stats, anon_wer_stats):
     wer_data = {
         "WER Score": ["Original", "Anonymized"],
-        "Value": [orig_wer_score, anon_wer_score]
+        "Mean": [orig_wer_stats['mean'], anon_wer_stats['mean']],
+        "CI Lower": [mean - ci[0] for mean, ci in zip([orig_wer_stats['mean'], anon_wer_stats['mean']],
+                                                      [orig_wer_stats['ci'], anon_wer_stats['ci']])],
+        "CI Upper": [ci[1] - mean for mean, ci in zip([orig_wer_stats['mean'], anon_wer_stats['mean']],
+                                                      [orig_wer_stats['ci'], anon_wer_stats['ci']])]
     }
     df = pd.DataFrame(wer_data)
 
     fig, ax = plt.subplots()
-    ax.bar(df["WER Score"], df["Value"], color=['blue', 'green'])
-    ax.set_ylabel('WER Score')
-    ax.set_title('Word Error Rate Before and After Conversion')
+    bars = ax.bar(df["WER Score"], df["Mean"], color=['blue', 'green'],
+                  yerr=[df["CI Lower"].values, df["CI Upper"].values], capsize=5)
+    
+    ax.set_ylabel('WER Score Averages')
+    ax.set_title('Comparison of WER Scores: Original vs. Anonymized')
+    ax.set_ylim(0, 1)
+    ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+    max_height = max(df["Mean"]) + max(df["CI Upper"])
+    for bar, ci_lower, ci_upper in zip(bars, df["CI Lower"], df["CI Upper"]):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + ci_upper + 0.01, f'{bar.get_height():.4f}',
+                ha='center', va='bottom')
+
     plt.show()
 
 def plot_eer_scores(eer_scores):
@@ -49,14 +63,18 @@ def plot_eer_scores(eer_scores):
     df = pd.DataFrame(eer_data)
 
     fig, ax = plt.subplots()
-    ax.bar(df["Comparison"], df["EER Score"], color=['red', 'orange', 'yellow'])
+    bars = ax.bar(df["Comparison"], df["EER Score"], color=['red', 'orange', 'yellow'])
     ax.set_ylabel('EER Score')
-    ax.set_title('Equal Error Rate (EER) Scores')
+    ax.set_title(f'Equal Error Rate (EER) Scores')
+    ax.set_ylim(0, 1)
+    max_height = max(df["EER Score"])
+    for bar in bars:
+        ax.text(bar.get_x() + bar.get_width()/2, max_height, f'{bar.get_height():.4f}', ha='center', va='bottom')
     plt.show()
 
 def visualize_metrics(metrics):
     plot_similarity_scores(metrics['similarities'])
-    plot_wer_scores(metrics['orig_wer_score'], metrics['anon_wer_score'])
+    plot_wer_scores(metrics['orig_wer_stats'], metrics['anon_wer_stats'])
     plot_eer_scores(metrics['eer_scores'])
 
 # plot of similarity, eer (speaker1=speaker2, speaker1!=speaker2)

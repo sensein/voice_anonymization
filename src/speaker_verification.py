@@ -5,9 +5,9 @@ from speechbrain.inference.speaker import EncoderClassifier
 from speechbrain.utils.metric_stats import EER
 from tqdm import tqdm
 from torchmetrics.text import WordErrorRate
-import huggingface_hub
-from datasets import Dataset, Audio, load_from_disk
+from datasets import Dataset, load_from_disk
 import json
+import numpy as np
 
 def add_embeddings(item: dict) -> dict:
     """
@@ -66,8 +66,8 @@ def compute_metrics(dataset: Dataset) -> dict:
     Returns:
         dict: A dictionary containing:
             'similarities': Dataset with columns ['same_speaker', 'orig_orig_similarity_score', 'orig_anon_similarity_score', 'anon_anon_similarity_score']
-            'orig_wer_score': WER (Word Error Rate) score computed from original ASR transcriptions
-            'anon_wer_score': WER (Word Error Rate) score computed from anonymized ASR transcriptions
+            'orig_wer_stats': Dictionary with mean, std, and 95% confidence interval for original ASR WER scores
+            'anon_wer_stats': Dictionary with mean, std, and 95% confidence interval for anonymized ASR WER scores
             'eer_scores': Dictionary with EER (Equal Error Rate) scores and thresholds for:
                 'orig_orig': original vs original embeddings
                 'orig_anon': original vs anonymized embeddings
@@ -84,18 +84,25 @@ def compute_metrics(dataset: Dataset) -> dict:
     [
         same_speakers,
         orig_orig_similarity_scores, orig_anon_similarity_scores, anon_anon_similarity_scores, 
+        orig_wer_scores, anon_wer_scores,
         orig_orig_positive_scores, orig_orig_negative_scores,
         orig_anon_positive_scores, orig_anon_negative_scores, 
         anon_anon_positive_scores, anon_anon_negative_scores, 
-        orig_transcripts, anon_transcripts, predictions
+    ] = [[] for _ in range(12)] 
+    wer = WordErrorRate()
 
-    ] = [[] for _ in range(13)] 
-
-
+    # ~=.25 seconds per pair (around 20 minutes for 100 samples = 4950 pairs)
+    # 1000 samples -> C(100,2) = 499,500 pairs
+    # 499500 * .25 / 3600 ~= 35 hours for 1000 samples
     for i in tqdm(range(len(dataset))):
-        orig_transcripts.append(dataset[i]['transcript'])
-        anon_transcripts.append(dataset[i]['asr_transcription_anon']['text']) # Anonymized audio that was transcribed
-        predictions.append(dataset[i]['asr_transcription']['text'])
+        orig_transcript = dataset[i]['transcript']
+        orig_asr_prediction = dataset[i]['asr_transcription']['text']
+        anon_asr_prediction = dataset[i]['asr_transcription_anon']['text']
+        orig_wer_score = wer(orig_asr_prediction, orig_transcript).item() # wer(input, target)
+        anon_wer_score = wer(anon_asr_prediction, orig_transcript).item()
+        orig_wer_scores.append(orig_wer_score)
+        anon_wer_scores.append(anon_wer_score)
+
         for j in range(i+1, len(dataset)):
             speaker_id1, speaker_id2 = dataset[i]['speaker_id'], dataset[j]['speaker_id']
             original_embedding1, original_embedding2 = torch.tensor(dataset[i]['embeddings']), torch.tensor(dataset[j]['embeddings'])
@@ -111,15 +118,25 @@ def compute_metrics(dataset: Dataset) -> dict:
             (orig_orig_positive_scores if speaker_id1 == speaker_id2 else orig_orig_negative_scores).append(orig_orig_similarity_score)
             (orig_anon_positive_scores if speaker_id1 == speaker_id2 else orig_anon_negative_scores).append(orig_anon_similarity_score)
             (anon_anon_positive_scores if speaker_id1 == speaker_id2 else anon_anon_negative_scores).append(anon_anon_similarity_score)
-
+ 
     orig_orig_eer_score, orig_orig_threshold = EER(torch.tensor(orig_orig_positive_scores), torch.tensor(orig_orig_negative_scores))
     orig_anon_eer_score, orig_anon_threshold = EER(torch.tensor(orig_anon_positive_scores), torch.tensor(orig_anon_negative_scores))
     anon_anon_eer_score, anon_anon_threshold = EER(torch.tensor(anon_anon_positive_scores), torch.tensor(anon_anon_negative_scores))
-
-    wer = WordErrorRate()
-    orig_wer_score = wer(predictions, orig_transcripts).item()
-    anon_wer_score = wer(predictions, anon_transcripts).item()
-
+    
+    orig_wer_mean = np.mean(orig_wer_scores)
+    orig_wer_std = np.std(orig_wer_scores)
+    anon_wer_mean = np.mean(anon_wer_scores)
+    anon_wer_std = np.std(anon_wer_scores)
+    n_bootstrap = 10000 #todo can change?
+    orig_wer_bootstrap_means = []
+    anon_wer_bootstrap_means = []
+    for _ in range(n_bootstrap): # todo is bootstrapping valid
+        orig_sample = np.random.choice(orig_wer_scores, size=len(orig_wer_scores), replace=True)
+        anon_sample = np.random.choice(anon_wer_scores, size=len(anon_wer_scores), replace=True)
+        orig_wer_bootstrap_means.append(np.mean(orig_sample))
+        anon_wer_bootstrap_means.append(np.mean(anon_sample))
+    orig_wer_ci = np.percentile(orig_wer_bootstrap_means, [2.5, 97.5])
+    anon_wer_ci = np.percentile(anon_wer_bootstrap_means, [2.5, 97.5])
     similarities = Dataset.from_dict({
         'same_speaker': same_speakers,
         'orig_orig_similarity_score': orig_orig_similarity_scores,
@@ -129,13 +146,13 @@ def compute_metrics(dataset: Dataset) -> dict:
 
     metrics = {
         'similarities': similarities,
-        'orig_wer_score': orig_wer_score,
-        'anon_wer_score': anon_wer_score,
+        'orig_wer_stats': {'mean': orig_wer_mean, 'std': orig_wer_std, 'ci': orig_wer_ci},
+        'anon_wer_stats': {'mean': anon_wer_mean, 'std': anon_wer_std, 'ci': anon_wer_ci},
         'eer_scores': {
             'orig_orig': (orig_orig_eer_score, orig_orig_threshold),
             'orig_anon': (orig_anon_eer_score, orig_anon_threshold),
             'anon_anon': (anon_anon_eer_score, anon_anon_threshold)
-        }
+        }, 
     }
     
     print('done computing metrics and pairwise similarity')
