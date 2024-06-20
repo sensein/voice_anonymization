@@ -4,6 +4,7 @@ import opensmile
 from tqdm.auto import tqdm
 from cca_cka_utilities import cka, gram_linear, feature_space_linear_cka, cca
 import numpy as np
+from utils import CODEBASE_DIR
 
 def load_opensmile_model(feature_set, feature_level):
     """
@@ -141,17 +142,22 @@ def main():
     ###############################################################################
             
     # Load dataset
-    dataset = load_dataset(dataset_name, dataset_split)[dataset_subset].select(range(100))
-    
+    # dataset = load_dataset(dataset_name, dataset_split)[dataset_subset].select(range(100))
+    dataset = load_from_disk(f"{CODEBASE_DIR}/data/processed/LibriTTS-dev-clean-16khz-mono-loudnorm-dataset")
+    anon_dataset = load_from_disk(f"{CODEBASE_DIR}/data/processed/LibriTTS-dev-clean-16khz-mono-loudnorm-dataset-converted")
     # Process dataset
     updated_dataset = extract_feats_from_dataset(dataset, feature_set, feature_level)
+    updated_dataset_anon = extract_feats_from_dataset(anon_dataset, feature_set, feature_level)
     print(updated_dataset)
-
+    print(updated_dataset_anon)
     # Apply the function to every example in the dataset (assuming the dataset split is 'train')
     updated_dataset = updated_dataset.map(transform_features)
     features_list = np.array(updated_dataset['features_list']).squeeze()
+    anon_features_list = np.array(updated_dataset_anon['features']).squeeze()
+    print(f"{features_list=}")
+    # print(f"{anon_features_list=}")
 
-    cka_from_examples = cka(gram_linear(features_list), gram_linear(features_list))
+    cka_from_examples = cka(gram_linear(features_list), gram_linear(features_list)) 
     cka_from_features = feature_space_linear_cka(features_list, features_list)
     cca_from_features = cca(features_list, features_list)
 

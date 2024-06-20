@@ -1,7 +1,9 @@
 import torch
+import numpy as np
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
-from datasets import load_dataset, load_from_disk
+from datasets import load_dataset, load_from_disk, Dataset, DatasetDict
 from tqdm.auto import tqdm
+from src.utils import CODEBASE_DIR
 
 def setup_device_and_dtype():
     """
@@ -79,7 +81,6 @@ def transcribe_dataset(dataset, pipe):
     transcriptions = [pipe(sample["audio"])["text"] for sample in dataset]
     return dataset.add_column("asr_transcription", transcriptions)
 """
-
 def transcribe_audio(batch, pipe):
     """
     Transcribes a batch of audio samples and retains the original batch data.
@@ -89,7 +90,8 @@ def transcribe_audio(batch, pipe):
         pipe: The ASR pipeline.
     
     Returns:
-        The updated batch dictionary with a new key "asr_transcription" containing the transcriptions of the audio files.
+        The updated batch dictionary with new keys "asr_transcription" and "asr_transcription_anon"
+        (if applicable) containing the transcriptions of the original and anonymized audio files, respectively.
     """
     # Perform transcription
     my_batch = batch.copy()
@@ -98,29 +100,20 @@ def transcribe_audio(batch, pipe):
 
 def transcribe_dataset(dataset, pipe):
     """
-    Transcribes all audio samples in the dataset and adds the transcriptions as a new column.
+    Transcribes all audio samples in the dataset and adds both original and anonymized transcriptions as new columns.
     
     Args:
         dataset: The dataset to transcribe.
         pipe: The ASR pipeline for transcription.
     
     Returns:
-        The dataset with a new column "asr_transcription" containing the audio transcriptions.
+        The dataset with new columns "asr_transcription" and "asr_transcription_anon" containing the audio transcriptions.
     """
     # Using batched map function to transcribe audio in batches for efficiency
     updated_dataset = dataset.map(transcribe_audio, batched=True, batch_size=16, fn_kwargs={"pipe": pipe})
     return updated_dataset
 
-def main():
-    ###############################################################################
-    # TODO: Set the params here before running the script
-    asr_model_id = "openai/whisper-tiny.en" # "openai/whisper-large-v3"
-    dataset_name = "blabble-io/libritts"
-    dataset_split = "dev" # we may want to switch to 'clean' or 'all' later, but pls keep 'dev' for now
-    path_to_updated_dataset = "../data/whisper_asr" # path to save the updated dataset
-    ###############################################################################
-
-    # Initialize settings and load model and processor
+def asr(asr_model_id, dataset, dataset_split): # todo. changes were dataset_name->dataset (more convenient) and removing path_to_updated_dataset (loading from hub)
     device, torch_dtype = setup_device_and_dtype()
 
     model, processor = load_model_and_processor(asr_model_id, device, torch_dtype)
@@ -129,17 +122,28 @@ def main():
     pipe = create_asr_pipeline(model, processor, device, torch_dtype)
     
     # Load dataset
-    dataset = load_dataset(dataset_name, dataset_split)
+    # dataset = load_dataset(dataset_name, split=dataset_split, cache_dir="../tmp")
     
     # Process dataset
     updated_dataset = transcribe_dataset(dataset, pipe)
     
     # Save updated dataset
-    updated_dataset.save_to_disk(path_to_updated_dataset)
+    # updated_dataset.save_to_disk(path_to_updated_dataset)
+    return updated_dataset
+
     print("Dataset updated and saved with transcriptions.")
-    
-    # updated_dataset = load_from_disk(path_to_updated_dataset)
-    # print(updated_dataset[0])
+
+def main():
+    ###############################################################################
+    # TODO: Set the params here before running the script
+    asr_model_id = "openai/whisper-tiny.en" # "openai/whisper-large-v3"
+    dataset_name = "azain/LibriTTS-dev-clean-processed-asr"
+    dataset_split = "dev" # we may want to switch to 'clean' or 'all' later, but pls keep 'dev' for now
+    # path_to_updated_dataset = "../data/whisper_asr" # path to save the updated dataset
+    ###############################################################################
+    updated_dataset = asr(asr_model_id, dataset_name, dataset_split)
+    updated_dataset.save_to_disk(f"{CODEBASE_DIR}/data/processed/LibriTTS-dev-clean-processed-asr")
+    # updated_dataset.push_to_hub(dataset_name, commit_message='Add asr transcriptions')
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,24 @@
+{
+  "citation": "",
+  "description": "",
+  "features": {
+    "same_speaker": {
+      "dtype": "bool",
+      "_type": "Value"
+    },
+    "orig_orig_similarity_score": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "orig_anon_similarity_score": {
+      "dtype": "float64",
+      "_type": "Value"
+    },
+    "anon_anon_similarity_score": {
+      "dtype": "float64",
+      "_type": "Value"
+    }
+  },
+  "homepage": "",
+  "license": ""
+}
