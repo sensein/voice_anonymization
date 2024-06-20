@@ -22,7 +22,7 @@ def add_embeddings(item: dict) -> dict:
     Returns:
         dict: The item with new 'embeddings' and 'anonymized_embeddings' keys holding the computed embeddings as numpy arrays.
     """
-    classifier = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb", savedir="./models/spkrec-ecapa-voxceleb")
+    classifier = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb", savedir=f"{CODEBASE_DIR}/models/spkrec-ecapa-voxceleb")
     waveform = torch.tensor(item['audio']['array']).squeeze()
     embeddings = classifier.encode_batch(waveform.unsqueeze(0)).squeeze()
     item['embeddings'] = embeddings.numpy()
