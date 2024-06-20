@@ -28,19 +28,19 @@ def anonymize_audio(item, target_item) -> dict:
 
     return item
 
-def voice_convert(audio_dataset: Dataset, target_index: int) -> Dataset:
+def voice_convert(audio_dataset: Dataset, target_speaker: int) -> Dataset:
     """
     Voice converts given audio dataset using anonymize_audio.
 
     Args:
         audio_dataset (Dataset): The dataset containing audio files and their corresponding metadata.
-        target_index (int): The index of the target audio file to use for conversion.
+        target_speaker (int): The target speaker id to use as baseline for conversion. Must be present in the dataset.
 
     Returns:
         Dataset: A new Dataset object containing the original metadata but with audio arrays replaced by anonymized versions.
     """
-    print(f"Converting audio dataset using target index {target_index}")
-    target_item = audio_dataset[target_index] # todo can get a random one too
+    print(f"Converting audio dataset using target speaker {target_speaker}")
+    target_item = [item for item in audio_dataset if item['speaker_id'] == target_speaker][0] 
     updated_dataset = audio_dataset.map(anonymize_audio, fn_kwargs={'target_item': target_item})
     print("Audio dataset converted.")
     return updated_dataset

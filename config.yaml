@@ -1,0 +1,15 @@
+raw_data_path: "{CODEBASE_DIR}/data/raw/LibriTTS/dev-clean"
+processed_data_path: "{CODEBASE_DIR}/data/processed/LibriTTS-dev-clean-16khz-mono-loudnorm-with-genders-pipeline-test"
+transcript_path_pattern: "{base_name}.original.txt"
+speaker_id_pattern: "(\\d+)_"
+target_sample_rate: 16000
+num_samples: 100
+file_extensions:
+  - ".wav"
+speaker_data_path: "{CODEBASE_DIR}/data/raw/LibriTTS/speakers.csv"
+speaker_id_column: "ID"
+gender_column: "SEX"
+asr_model_id: "openai/whisper-tiny.en"
+split: "dev"
+target_speaker: "6313"
+dataset_name: "azain/LibriTTS-dev-clean-100-samples"

@@ -8,6 +8,9 @@ from torchmetrics.text import WordErrorRate
 from datasets import Dataset, load_from_disk
 import json
 import numpy as np
+from pydra import mark, Workflow, Submitter
+import nest_asyncio
+nest_asyncio.apply()
 
 def add_embeddings(item: dict) -> dict:
     """
@@ -45,6 +48,14 @@ def process_data_to_embeddings(audio_dataset: Dataset) -> Dataset:
     updated_dataset = audio_dataset.map(add_embeddings, batched=False)
     return updated_dataset
 
+@mark.task
+def compute_wer_scores(i: int, dataset_dict: dict) -> tuple[int, int]:
+    orig_transcript = dataset_dict[i]['transcript']
+    orig_asr_prediction = dataset_dict[i]['asr_transcription']['text']
+    anon_asr_prediction = dataset_dict[i]['asr_transcription_anon']['text']
+    wer = WordErrorRate()
+    return wer(orig_asr_prediction, orig_transcript).item(), wer(anon_asr_prediction, orig_transcript).item()
+
 def compute_similarity_score(embedding1: torch.Tensor, embedding2: torch.Tensor) -> float: # todo could try ECAPA too
     """
     Computes the similarity score between two embeddings using cosine similarity.
@@ -54,6 +65,44 @@ def compute_similarity_score(embedding1: torch.Tensor, embedding2: torch.Tensor)
     """
     cos = torch.nn.CosineSimilarity(dim=-1)
     return cos(embedding1, embedding2).item()
+
+@mark.task
+def compute_pairwise_similarity(i: int, dataset_dict: dict) -> dict:
+    results = {
+        'same_speakers': [],
+        'orig_orig_similarity_scores': [],
+        'orig_anon_similarity_scores': [],
+        'anon_anon_similarity_scores': [],
+        'orig_orig_positive_scores': [],
+        'orig_orig_negative_scores': [],
+        'orig_anon_positive_scores': [],
+        'orig_anon_negative_scores': [],
+        'anon_anon_positive_scores': [],
+        'anon_anon_negative_scores': []
+    }
+    
+    for j in range(i + 1, len(dataset_dict)):
+        speaker_id1, speaker_id2 = dataset_dict[i]['speaker_id'], dataset_dict[j]['speaker_id']
+        original_embedding1, original_embedding2 = torch.tensor(dataset_dict[i]['embeddings']), torch.tensor(dataset_dict[j]['embeddings'])
+        anonymized_embedding1, anonymized_embedding2 = torch.tensor(dataset_dict[i]['anonymized_embeddings']), torch.tensor(dataset_dict[j]['anonymized_embeddings'])
+
+        results['same_speakers'].append(speaker_id1 == speaker_id2)
+        orig_orig_similarity_score = compute_similarity_score(original_embedding1, original_embedding2)
+        orig_anon_similarity_score = compute_similarity_score(original_embedding1, anonymized_embedding2)
+        anon_anon_similarity_score = compute_similarity_score(anonymized_embedding1, anonymized_embedding2)
+        results['orig_orig_similarity_scores'].append(orig_orig_similarity_score)
+        results['orig_anon_similarity_scores'].append(orig_anon_similarity_score)
+        results['anon_anon_similarity_scores'].append(anon_anon_similarity_score)
+        if speaker_id1 == speaker_id2:
+            results['orig_orig_positive_scores'].append(orig_orig_similarity_score)
+            results['orig_anon_positive_scores'].append(orig_anon_similarity_score)
+            results['anon_anon_positive_scores'].append(anon_anon_similarity_score)
+        else:
+            results['orig_orig_negative_scores'].append(orig_orig_similarity_score)
+            results['orig_anon_negative_scores'].append(orig_anon_similarity_score)
+            results['anon_anon_negative_scores'].append(anon_anon_similarity_score)
+    
+    return results
 
 def compute_metrics(dataset: Dataset) -> dict:
     """
@@ -81,6 +130,18 @@ def compute_metrics(dataset: Dataset) -> dict:
     if missing_columns:
         raise ValueError(f"Dataset is missing the following columns: {', '.join(missing_columns)}")
     
+    ### Parallelization attempt
+    # dataset_dict = dataset.to_dict()
+    # wf = Workflow(name="compute_metrics", input_spec=["i", "dataset_dict"], dataset=dataset_dict)
+    # wf.split("i", i=list(range(len(dataset))))
+    # wf.add(compute_wer_scores(name="compute_wer_scores", i=wf.lzin.i, dataset_dict=wf.lzin.dataset_dict))
+    # wf.add(compute_pairwise_similarity(name="compute_pairwise_similarity", i=wf.lzin.i, dataset_dict=wf.lzin.dataset_dict))
+    # wf.set_output([('wf_out1', wf.compute_wer_scores.lzout.out), ('wf_out2', wf.compute_pairwise_similarity.lzout.out)])
+    # with Submitter(plugin='cf') as sub:
+    #     sub(wf)
+    # results = wf.result()
+    # return results
+    ###
     [
         same_speakers,
         orig_orig_similarity_scores, orig_anon_similarity_scores, anon_anon_similarity_scores, 
@@ -127,10 +188,10 @@ def compute_metrics(dataset: Dataset) -> dict:
     orig_wer_std = np.std(orig_wer_scores)
     anon_wer_mean = np.mean(anon_wer_scores)
     anon_wer_std = np.std(anon_wer_scores)
-    n_bootstrap = 10000 #todo can change?
+    n_bootstrap = 10000
     orig_wer_bootstrap_means = []
     anon_wer_bootstrap_means = []
-    for _ in range(n_bootstrap): # todo is bootstrapping valid
+    for _ in range(n_bootstrap):
         orig_sample = np.random.choice(orig_wer_scores, size=len(orig_wer_scores), replace=True)
         anon_sample = np.random.choice(anon_wer_scores, size=len(anon_wer_scores), replace=True)
         orig_wer_bootstrap_means.append(np.mean(orig_sample))
@@ -184,7 +245,7 @@ def main():
 
     ###############################################################################
     # TODO: Set the params here before running the script
-    dataset_path = f"{CODEBASE_DIR}/data/processed/LibriTTS-dev-100-samples-anon"
+    dataset_path = f"{CODEBASE_DIR}/data/processed/LibriTTS-dev-clean-16khz-mono-loudnorm-dataset-converted"
     from_disk = True
     split='dev'
     ###############################################################################

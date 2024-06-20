@@ -266,7 +266,6 @@ def preprocess(raw_data_path: str, processed_data_path: str, transcript_path_pat
         assert len(waveform) != 0, f"Empty waveform for {file_name}"
         torchaudio.save(processed_audio_path, waveform, sr)
 
-    # Upload to Hugging Face
     audio_dataset = create_audio_dataset(processed_data_path, transcript_path_pattern, speaker_id_pattern, 
                                          file_extensions, speaker_info_path, speaker_id_column, gender_column)
     if num_samples: audio_dataset = audio_dataset.shuffle(seed=42).select(range(num_samples))
