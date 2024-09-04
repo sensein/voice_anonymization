@@ -37,5 +37,10 @@ Access the project files and related data [here](https://drive.google.com/drive/
 
 
 ### TODO:
--[] PRE-PROCESS THE SECOND DATASET!!!! (CHECK FIRST HOW THE TRANSCRIPTS ARE)
 -[] SETUP DATALAD WITH GOOGLE DRIVE (SUBDATASETS)
+
+-[] VOICE CLONING PIPELINE
+
+-[] ASR BENCHMARKING
+
+-[] SER BENCHMARKING
