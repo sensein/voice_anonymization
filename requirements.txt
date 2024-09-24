@@ -1,6 +1,12 @@
+opensmile
 torch
-torchaudio
-librosa
 transformers
+datasets
+tqdm
+accelerate
+librosa
 soundfile
-tomli
+torchaudio
+pyloudnorm
+speechbrain
+torchmetrics

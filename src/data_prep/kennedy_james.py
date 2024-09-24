@@ -125,7 +125,7 @@ def process_audio_file(source_path, file_name, dest_path, participant_id, sessio
     # Perform transcription and capture timestamps
     result = pipe(audio_sample, return_timestamps=True, generate_kwargs={"language": "en"})
     transcript = file_name.split(".wav")[0].replace("_", " ").lower().strip()
-
+    
     # Update audio metadata
     relative_path = os.path.relpath(new_file_path, new_base_path)
     audio_metadata.append({
@@ -133,21 +133,22 @@ def process_audio_file(source_path, file_name, dest_path, participant_id, sessio
         "session": session,
         "relative_path": relative_path,
         "transcript": transcript,
-        "start": result['chunks'][0]['timestamp'][0] if result['chunks'] else 0.0,
-        "end": result['chunks'][-1]['timestamp'][1] if result['chunks'] else librosa.get_duration(y=audio_sample, sr=sample_rate),
+        "start": result['chunks'][0]['timestamp'][0] if 'chunks' in result and result['chunks'] is not None and result['chunks'][0] is not None and result['chunks'][0]['timestamp'][0] is not None else 0.0,
+        "end": result['chunks'][-1]['timestamp'][1] if 'chunks' in result and result['chunks'] is not None and result['chunks'][-1] is not None and result['chunks'][-1]['timestamp'][1] is not None else librosa.get_duration(y=audio_sample, sr=sample_rate),
     })
+
 
 # Write metadata to CSV files
 def write_metadata():
     # Write participants metadata to CSV
     with open(participants_metadata_path, mode='w', newline='') as file:
-        writer = csv.DictWriter(file, fieldnames=["participant_id", "sex_status", "age", "english_native_status"])
+        writer = csv.DictWriter(file, fieldnames=["participant_id", "sex_status", "age", "english_native_status"], delimiter='\t')
         writer.writeheader()
         writer.writerows(participants_metadata)
 
     # Write audio metadata to CSV
     with open(audio_metadata_path, mode='w', newline='') as file:
-        writer = csv.DictWriter(file, fieldnames=["participant_id", "session", "relative_path", "transcript", "start", "end"])
+        writer = csv.DictWriter(file, fieldnames=["participant_id", "session", "relative_path", "transcript", "start", "end"], delimiter='\t')
         writer.writeheader()
         writer.writerows(audio_metadata)
 

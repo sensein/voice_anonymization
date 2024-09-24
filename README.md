@@ -37,10 +37,11 @@ Access the project files and related data [here](https://drive.google.com/drive/
 
 
 ### TODO:
--[] SETUP DATALAD WITH GOOGLE DRIVE (SUBDATASETS)
+-[] SETUP DATALAD WITH GOOGLE DRIVE (SUBDATASETS) - for now you can find it at /nese/mit/group/sig/projects/fabiocat/children_voice_anonymization
 
 -[] VOICE CLONING PIPELINE
 
 -[] ASR BENCHMARKING
 
 -[] SER BENCHMARKING
+
